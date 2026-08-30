@@ -1,0 +1,12 @@
+﻿# Core Data Models & Schema Validation
+pydantic>=2.10.0
+
+# Ingestion API & Web Server
+fastapi>=0.110.0
+uvicorn>=0.28.0
+
+# On-Premise Agent & Local Inference
+ollama>=0.4.0
+
+# Testing & Quality Assurance
+pytest>=8.0.0
