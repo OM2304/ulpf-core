@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ulpf"
+version = "0.1.0"
+description = "Universal Log Pre-processing Framework"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.0",
+    "fastapi>=0.100",
+    "uvicorn>=0.20",
+    "pytest>=8.0"
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ulpf*"]

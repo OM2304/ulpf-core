@@ -1,0 +1,29 @@
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# Python Cache & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+
+# Pytest & Testing Cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local SQLite Database Spools & Analytics Data
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
+
+# OS / Editor Artifacts
+.vscode/
+.idea/
+*.swp
+.DS_Store
