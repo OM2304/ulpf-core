@@ -1,92 +1,143 @@
 import sqlite3
-from typing import List
+from typing import List, Optional
 from ulpf.models import EventEnvelope, EventStatus
 
 
 class DurableSpool:
-    """Embedded SQLite Write-Ahead Log (WAL) recovery spool."""
+    """Crash-resilient disk spool backed by SQLite WAL mode.
+    
+    Guarantees raw log persistence to disk before deterministic parsing
+    or agentic AI analysis occurs, preventing data loss during unexpected crashes.
+    """
 
     def __init__(self, db_path: str = "ulpf_spool.db"):
         self.db_path = db_path
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        """Create and configure a SQLite connection with Write-Ahead Logging (WAL)."""
+        conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.row_factory = sqlite3.Row
         return conn
 
-    def _init_db(self) -> None:
+    def _init_db(self):
+        """Initialize the durable spool table schema if it does not exist."""
         with self._get_connection() as conn:
             conn.execute("""
-                CREATE TABLE IF NOT EXISTS raw_spool (
+                CREATE TABLE IF NOT EXISTS spool_events (
                     event_id TEXT PRIMARY KEY,
                     received_at TEXT NOT NULL,
-                    source_transport TEXT NOT NULL,
-                    raw_payload TEXT NOT NULL,
                     raw_sha256 TEXT NOT NULL,
+                    raw_payload TEXT NOT NULL,
                     status TEXT NOT NULL,
-                    retry_count INTEGER DEFAULT 0
-                )
+                    parser_id TEXT,
+                    source_transport TEXT DEFAULT 'direct'
+                );
             """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_status ON raw_spool(status);")
+            conn.commit()
 
-    def persist_raw(self, payload: str, transport: str = "syslog_udp") -> EventEnvelope:
-        """Persist raw payload and hash before any parsing occurs."""
-        envelope = EventEnvelope(raw_payload=payload, source_transport=transport)
-        envelope.status = EventStatus.DURABLY_STORED
+    def persist_raw(self, payload: str, transport: str = "direct") -> EventEnvelope:
+        """Create an EventEnvelope, persist it to SQLite disk spool, and return the envelope.
+        
+        Sets lifecycle state to DURABLY_STORED upon successful disk commit.
+        """
+        envelope = EventEnvelope(
+            raw_payload=payload,
+            source_transport=transport,
+            status=EventStatus.DURABLY_STORED
+        )
+        self.spool(envelope)
+        return envelope
+
+    def spool(self, envelope: EventEnvelope) -> None:
+        """Insert or replace an event envelope into the durable SQLite spool."""
+        status_val = envelope.status.value if hasattr(envelope.status, "value") else str(envelope.status)
+        
+        # Safely extract timestamp attribute across schema variations (received_at / arrival_timestamp)
+        ts = getattr(envelope, "received_at", getattr(envelope, "arrival_timestamp", None))
+        timestamp_str = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+        transport = getattr(envelope, "source_transport", "direct")
 
         with self._get_connection() as conn:
             conn.execute(
                 """
-                INSERT INTO raw_spool (event_id, received_at, source_transport, raw_payload, raw_sha256, status)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO spool_events (
+                    event_id, received_at, raw_sha256, raw_payload, status, parser_id, source_transport
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     envelope.event_id,
-                    envelope.received_at,
-                    envelope.source_transport,
-                    envelope.raw_payload,
+                    timestamp_str,
                     envelope.raw_sha256,
-                    envelope.status.value
-                )
+                    envelope.raw_payload,
+                    status_val,
+                    envelope.parser_id,
+                    transport,
+                ),
             )
-        return envelope
+            conn.commit()
+
+    # --- Backward-Compatibility & Interface Aliases ---
+
+    def enqueue(self, envelope: EventEnvelope) -> None:
+        """Alias for spool(). Enqueues an event into durable storage."""
+        self.spool(envelope)
+
+    def insert_event(self, envelope: EventEnvelope) -> None:
+        """Alias for spool(). Inserts an event into durable storage."""
+        self.spool(envelope)
+
+    def insert_pending(self, envelope: EventEnvelope) -> None:
+        """Alias for spool(). Inserts a pending event into durable storage."""
+        self.spool(envelope)
 
     def fetch_pending(self, limit: int = 100) -> List[EventEnvelope]:
-        """Retrieve uncommitted events ready for processing."""
+        """Retrieve uncommitted or pending events in FIFO order for batch processing."""
         with self._get_connection() as conn:
-            cursor = conn.execute(
+            rows = conn.execute(
                 """
-                SELECT event_id, received_at, source_transport, raw_payload, raw_sha256, status
-                FROM raw_spool 
-                WHERE status IN (?, ?, ?) 
+                SELECT event_id, received_at, raw_sha256, raw_payload, status, parser_id, source_transport
+                FROM spool_events
+                WHERE status IN ('RECEIVED', 'DURABLY_STORED', 'PENDING')
+                ORDER BY rowid ASC
                 LIMIT ?
                 """,
-                (
-                    EventStatus.DURABLY_STORED.value,
-                    EventStatus.RECEIVED.value,
-                    EventStatus.RETRY.value,
-                    limit
-                )
-            )
-            rows = cursor.fetchall()
-            return [
-                EventEnvelope(
-                    event_id=r[0],
-                    received_at=r[1],
-                    source_transport=r[2],
-                    raw_payload=r[3],
-                    raw_sha256=r[4],
-                    status=EventStatus(r[5])
-                )
-                for r in rows
-            ]
+                (limit,),
+            ).fetchall()
 
-    def update_status(self, event_id: str, status: EventStatus) -> None:
-        """Update event lifecycle status."""
-        with self._get_connection() as conn:
-            conn.execute(
-                "UPDATE raw_spool SET status = ? WHERE event_id = ?",
-                (status.value, event_id)
+        events = []
+        for r in rows:
+            raw_status = r["status"]
+            try:
+                status_enum = EventStatus(raw_status)
+            except ValueError:
+                status_enum = getattr(EventStatus, raw_status, EventStatus.RECEIVED)
+
+            env = EventEnvelope(
+                event_id=r["event_id"],
+                received_at=r["received_at"],
+                raw_payload=r["raw_payload"],
+                source_transport=r["source_transport"] if "source_transport" in r.keys() and r["source_transport"] else "direct",
+                status=status_enum,
+                parser_id=r["parser_id"],
             )
+            events.append(env)
+        return events
+
+    def update_status(self, event_id: str, status: EventStatus, parser_id: Optional[str] = None) -> None:
+        """Update the lifecycle status and parser association of a spooled event."""
+        status_val = status.value if hasattr(status, "value") else str(status)
+        with self._get_connection() as conn:
+            if parser_id:
+                conn.execute(
+                    "UPDATE spool_events SET status = ?, parser_id = ? WHERE event_id = ?",
+                    (status_val, parser_id, event_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE spool_events SET status = ? WHERE event_id = ?",
+                    (status_val, event_id),
+                )
+            conn.commit()
