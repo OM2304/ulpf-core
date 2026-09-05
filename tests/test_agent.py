@@ -56,9 +56,39 @@ class MockReflectingLLM:
             })
 
 
+class MockMultiFormatLLM:
+    """Mock LLM that inspects prompt samples and generates appropriate regex for different log families."""
+
+    def __call__(self, prompt: str) -> str:
+        if "EDGE_ROUTER" in prompt:
+            return json.dumps({
+                "regex_pattern": r"CLIENT=(?P<client_ip>[^\s]+)\s+REMOTE=(?P<remote_ip>[^\s]+)\s+PROTO=(?P<proto>\w+)\s+STATE=(?P<state>\w+)",
+                "field_mappings": {
+                    "src_ip": "client_ip",
+                    "dst_ip": "remote_ip",
+                    "proto": "proto",
+                    "action": "state"
+                }
+            })
+        elif "SCADA_RTU" in prompt:
+            return json.dumps({
+                "regex_pattern": r"src=(?P<src_ip>[^\s]+)\s+dst=(?P<dst_ip>[^\s]+)\s+proto=(?P<proto>\w+)\s+status=(?P<status>\w+)",
+                "field_mappings": {
+                    "src_ip": "src_ip",
+                    "dst_ip": "dst_ip",
+                    "proto": "proto",
+                    "action": "status"
+                }
+            })
+        return json.dumps({
+            "regex_pattern": r"(?P<src_ip>\d+\.\d+\.\d+\.\d+)",
+            "field_mappings": {"src_ip": "src_ip"}
+        })
+
+
 def test_agent_synthesis_and_registry_promotion():
     """Test basic successful parser generation and hot-reload promotion."""
-    registry = DynamicParserRegistry()
+    registry = DynamicParserRegistry(storage_dir=None)
     engine = DeterministicEngine(registry=registry)
     agent = ParserSynthesisAgent(registry=registry, llm_caller=mock_successful_llm_response)
 
@@ -76,7 +106,6 @@ def test_agent_synthesis_and_registry_promotion():
     assert definition.parser_id == "ai_edge_router_v1"
     assert "ai_edge_router_v1" in registry.list_parsers()
 
-    # Verify live engine handles the log without restarts
     envelope = EventEnvelope(raw_payload=sample_logs[0])
     success, processed = engine.parse_and_normalize(envelope)
 
@@ -90,7 +119,7 @@ def test_agent_synthesis_and_registry_promotion():
 
 def test_agent_rejects_invalid_synthesis():
     """Test that failed synthesis attempts do not register broken parsers."""
-    registry = DynamicParserRegistry()
+    registry = DynamicParserRegistry(storage_dir=None)
     agent = ParserSynthesisAgent(registry=registry, llm_caller=mock_failing_llm_response)
 
     sample_logs = [
@@ -109,7 +138,7 @@ def test_agent_rejects_invalid_synthesis():
 
 def test_agent_self_correction_reflection_loop():
     """Test Reflexion loop: LLM fails on attempt 1, reflects on error, and succeeds on attempt 2."""
-    registry = DynamicParserRegistry()
+    registry = DynamicParserRegistry(storage_dir=None)
     engine = DeterministicEngine(registry=registry)
     mock_llm = MockReflectingLLM()
     agent = ParserSynthesisAgent(registry=registry, llm_caller=mock_llm)
@@ -129,7 +158,6 @@ def test_agent_self_correction_reflection_loop():
     assert definition is not None
     assert definition.parser_id == "ai_custom_sensor_v1"
 
-    # Verify live engine handles the log with the corrected parser
     envelope = EventEnvelope(raw_payload=sample_logs[0])
     success, processed = engine.parse_and_normalize(envelope)
     assert success is True
@@ -139,13 +167,13 @@ def test_agent_self_correction_reflection_loop():
 
 
 def test_agent_triage_pending_spool(tmp_path):
-    """Test end-to-end triage: PENDING_AI spool items are parsed, resolved, and committed."""
+    """Test end-to-end triage: PENDING_AI spool items are clustered, parsed, and committed."""
     spool_db = str(tmp_path / "triage_spool.db")
     storage_db = str(tmp_path / "triage_storage.db")
 
     spool = DurableSpool(db_path=spool_db)
     storage = NormalizedStorage(db_path=storage_db)
-    registry = DynamicParserRegistry()
+    registry = DynamicParserRegistry(storage_dir=None)
     engine = DeterministicEngine(registry=registry)
 
     agent = ParserSynthesisAgent(
@@ -163,11 +191,55 @@ def test_agent_triage_pending_spool(tmp_path):
     stats = agent.triage_pending_spool(engine=engine, storage=storage, batch_size=10)
 
     assert stats["triaged"] == 1
+    assert stats["clusters_detected"] == 1
     assert stats["onboarded_parsers"] == 1
     assert stats["committed"] == 1
 
-    # Verify event is now committed in analytics storage
     record = storage.get_event_by_id(env1.event_id)
     assert record is not None
     assert record["disposition"] == "Blocked"
     assert record["src_ip"] == "10.50.1.20"
+
+
+def test_agent_triage_multi_format_clustering(tmp_path):
+    """Test triage with mixed unknown formats: verifies distinct clusters synthesize distinct parsers."""
+    spool_db = str(tmp_path / "multi_spool.db")
+    storage_db = str(tmp_path / "multi_storage.db")
+
+    spool = DurableSpool(db_path=spool_db)
+    storage = NormalizedStorage(db_path=storage_db)
+    registry = DynamicParserRegistry(storage_dir=None)
+    engine = DeterministicEngine(registry=registry)
+
+    mock_llm = MockMultiFormatLLM()
+    agent = ParserSynthesisAgent(
+        registry=registry,
+        spool=spool,
+        llm_caller=mock_llm
+    )
+
+    # Ingest 2 Router logs + 2 SCADA logs
+    router_log = "[EDGE_ROUTER_01] CLIENT=10.50.1.20 REMOTE=203.0.113.10 PROTO=UDP STATE=REJECT"
+    scada_log = "SCADA_RTU_08: dev=MODBUS src=10.10.1.5 dst=10.10.1.100 proto=TCP status=PERMIT"
+
+    env_r = spool.persist_raw(payload=router_log)
+    spool.update_status(env_r.event_id, EventStatus.PENDING_AI)
+
+    env_s = spool.persist_raw(payload=scada_log)
+    spool.update_status(env_s.event_id, EventStatus.PENDING_AI)
+
+    stats = agent.triage_pending_spool(engine=engine, storage=storage, batch_size=10)
+
+    assert stats["triaged"] == 2
+    assert stats["clusters_detected"] == 2
+    assert stats["onboarded_parsers"] == 2
+    assert stats["committed"] == 2
+
+    # Verify both records committed in analytical storage
+    rec_r = storage.get_event_by_id(env_r.event_id)
+    assert rec_r["src_ip"] == "10.50.1.20"
+    assert rec_r["disposition"] == "Blocked"
+
+    rec_s = storage.get_event_by_id(env_s.event_id)
+    assert rec_s["src_ip"] == "10.10.1.5"
+    assert rec_s["disposition"] == "Allowed"

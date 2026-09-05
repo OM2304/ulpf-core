@@ -2,6 +2,7 @@ import json
 import re
 from typing import Callable, Dict, List, Optional, Tuple
 from rich import print as rprint
+from ulpf.clustering import cluster_unrecognized_events
 from ulpf.models import EventEnvelope, EventStatus
 from ulpf.registry import DynamicParserRegistry, ParserDefinition, SandboxValidator
 from ulpf.spool import DurableSpool
@@ -117,7 +118,6 @@ Do not include any explanation or Markdown outside the JSON.
         elif "```" in cleaned:
             cleaned = cleaned.split("```")[1].split("```")[0].strip()
 
-        # Isolate JSON envelope boundaries
         start = cleaned.find("{")
         end = cleaned.rfind("}")
         if start != -1 and end != -1 and end > start:
@@ -196,7 +196,7 @@ Do not include any explanation or Markdown outside the JSON.
                 current_prompt = self.build_reflection_prompt(sample_logs, last_failed_pattern, error_msg)
                 continue
 
-            # 2. Strict Named Group Check: Verify mapped groups exist in the regex
+            # 2. Strict Named Group Check
             missing_groups = [
                 grp for grp in field_mappings.values()
                 if grp not in compiled.groupindex
@@ -218,7 +218,7 @@ Do not include any explanation or Markdown outside the JSON.
                 timeout_ms=50.0
             )
 
-            # 4. Verify that named groups actually extract non-empty values from samples
+            # 4. Verify that named groups extract values from samples
             extraction_valid = True
             for sample in sample_logs:
                 m = compiled.search(sample)
@@ -244,7 +244,7 @@ Do not include any explanation or Markdown outside the JSON.
                 if self.registry.register(definition):
                     return definition
 
-            # Prepare reflection prompt for next iteration with specific environmental feedback
+            # Prepare reflection prompt for next iteration
             last_failed_pattern = regex_pattern
             error_msg = f"{reason} (Coverage: {coverage * 100:.1f}%, Field Extraction Valid: {extraction_valid})"
             rprint(f"    [yellow]⚠ Reflexion Loop Triggered:[/yellow] {error_msg}")
@@ -258,9 +258,9 @@ Do not include any explanation or Markdown outside the JSON.
         storage,
         batch_size: int = 50
     ) -> Dict[str, int]:
-        """Fetch PENDING_AI events from spool, synthesize parsers, and re-process through the engine."""
+        """Fetch PENDING_AI events, partition by structural skeleton clusters, synthesize, and commit."""
         if not self.spool:
-            return {"triaged": 0, "onboarded_parsers": 0, "committed": 0}
+            return {"triaged": 0, "clusters_detected": 0, "onboarded_parsers": 0, "committed": 0}
 
         # Query events marked for AI attention
         with self.spool._get_connection() as conn:
@@ -276,7 +276,7 @@ Do not include any explanation or Markdown outside the JSON.
             ).fetchall()
 
         if not rows:
-            return {"triaged": 0, "onboarded_parsers": 0, "committed": 0}
+            return {"triaged": 0, "clusters_detected": 0, "onboarded_parsers": 0, "committed": 0}
 
         pending_events: List[EventEnvelope] = []
         for r in rows:
@@ -290,25 +290,25 @@ Do not include any explanation or Markdown outside the JSON.
             )
             pending_events.append(env)
 
-        # Collect raw payloads as synthesis samples
-        sample_payloads = [e.raw_payload for e in pending_events[:5]]
-        auto_parser_id = f"dynamic_ai_parser_{len(self.registry.list_parsers()) + 1}"
-
-        definition = self.synthesize_and_onboard(
-            parser_id=auto_parser_id,
-            sample_logs=sample_payloads
-        )
+        # 1. Partition pending logs into homogeneous structural clusters
+        clusters = cluster_unrecognized_events(pending_events)
+        rprint(f"  • Clustered [bold]{len(pending_events)}[/bold] pending event(s) into [bold]{len(clusters)}[/bold] structural log signature(s).")
 
         stats = {
             "triaged": len(pending_events),
-            "onboarded_parsers": 1 if definition else 0,
+            "clusters_detected": len(clusters),
+            "onboarded_parsers": 0,
             "committed": 0
         }
 
-        if definition:
-            # Re-process the triaged events with the newly registered parser
-            for event in pending_events:
-                success, parsed_event = engine.parse_and_normalize(event)
+        # 2. Process each cluster independently
+        for cluster in clusters:
+            rprint(f"    [dim]Processing Cluster [{cluster.cluster_id}] ({cluster.sample_count} events):[/dim] [italic]{cluster.skeleton[:70]}...[/italic]")
+
+            # Check if an existing parser in the registry already matches this cluster
+            unhandled_events: List[EventEnvelope] = []
+            for ev in cluster.events:
+                success, parsed_event = engine.parse_and_normalize(ev)
                 if success and parsed_event.status == EventStatus.COMMITTED:
                     storage.commit_event(parsed_event)
                     self.spool.update_status(
@@ -317,5 +317,30 @@ Do not include any explanation or Markdown outside the JSON.
                         parser_id=parsed_event.parser_id
                     )
                     stats["committed"] += 1
+                else:
+                    unhandled_events.append(ev)
+
+            if not unhandled_events:
+                continue
+
+            # Synthesize a dedicated parser tailored specifically for this structural cluster
+            cluster_parser_id = f"dynamic_ai_{cluster.cluster_id}_v1"
+            definition = self.synthesize_and_onboard(
+                parser_id=cluster_parser_id,
+                sample_logs=cluster.sample_logs
+            )
+
+            if definition:
+                stats["onboarded_parsers"] += 1
+                for ev in unhandled_events:
+                    success, parsed_event = engine.parse_and_normalize(ev)
+                    if success and parsed_event.status == EventStatus.COMMITTED:
+                        storage.commit_event(parsed_event)
+                        self.spool.update_status(
+                            parsed_event.event_id,
+                            EventStatus.COMMITTED,
+                            parser_id=parsed_event.parser_id
+                        )
+                        stats["committed"] += 1
 
         return stats
