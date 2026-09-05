@@ -1,0 +1,12 @@
+{
+  "parser_id": "dynamic_ai_parser_1",
+  "parser_version": "1.0.0",
+  "description": "AI-synthesized dynamic parser (validated via sandbox reflexion)",
+  "regex_pattern": ".*CLIENT=(?P<client_ip>\\S+)\\s+REMOTE=(?P<remote_ip>\\S+)\\s+PROTO=(?P<proto>\\w+)\\s+STATE=(?P<state>\\w+)",
+  "field_mappings": {
+    "src_ip": "client_ip",
+    "dst_ip": "remote_ip",
+    "proto": "proto",
+    "action": "state"
+  }
+}

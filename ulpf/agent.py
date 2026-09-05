@@ -1,3 +1,4 @@
+import ast
 import json
 import re
 from typing import Callable, Dict, List, Optional, Tuple
@@ -55,18 +56,22 @@ Generate a Python regular expression with NAMED capture groups that extracts:
 
 MANDATORY RULES:
 - You MUST use Python named capture groups with (?P<group_name>pattern) syntax.
-  Example: CLIENT=(?P<client_ip>\\S+)\\s+REMOTE=(?P<remote_ip>\\S+)\\s+PROTO=(?P<proto>\\w+)\\s+STATE=(?P<state>\\w+)
-- DO NOT use unnamed parentheses like (\\d+). ALWAYS name them like (?P<src_ip>\\d+).
-- Double-escape backslashes for valid JSON (use \\\\d, \\\\s, \\\\w, \\\\[, \\\\]).
-- Return ONLY a valid JSON object matching this exact schema:
+- For key-value logs, extract ONLY the 4 required fields using non-greedy wildcards (.*?) between them.
+  Example pattern structure: src=(?P<src_ip>\\S+).*?dst=(?P<dst_ip>\\S+).*?proto=(?P<proto>\\S+).*?action=(?P<action>\\S+)
+- DO NOT attempt to rigidly match every unused intermediate field (like policy, bytes_sent, device) as omitting one breaks the match.
+- For IP addresses, use \\d+\\.\\d+\\.\\d+\\.\\d+ or \\S+ (do NOT use \\w+ because IP addresses contain dots).
+- For unquoted tokens, \\S+ matches cleanly up to whitespace.
+- For quoted values with spaces, use "[^"]*" or '[^']*'.
+- Double-escape backslashes for valid JSON (use \\\\d, \\\\s, \\\\S).
+- Return ONLY a valid JSON object matching this schema:
 
 {{
-  "regex_pattern": ".*CLIENT=(?P<client_ip>\\\\S+)\\\\s+REMOTE=(?P<remote_ip>\\\\S+)\\\\s+PROTO=(?P<proto>\\\\w+)\\\\s+STATE=(?P<state>\\\\w+)",
+  "regex_pattern": "<your_regex_with_named_groups>",
   "field_mappings": {{
-    "src_ip": "client_ip",
-    "dst_ip": "remote_ip",
-    "proto": "proto",
-    "action": "state"
+    "src_ip": "<group_name_for_src_ip>",
+    "dst_ip": "<group_name_for_dst_ip>",
+    "proto": "<group_name_for_protocol>",
+    "action": "<group_name_for_action>"
   }}
 }}
 Do not include any explanation or Markdown outside the JSON.
@@ -94,8 +99,11 @@ Validation Error Reason:
 Reflect on why the previous pattern failed. Fix the regular expression:
 1. You MUST use Python named capture groups (?P<name>pattern).
 2. Every field in field_mappings must match a (?P<name>...) group in regex_pattern.
-3. Double-escape backslashes in JSON (\\\\d, \\\\s, \\\\w).
-4. Ensure it matches 100% of the sample logs without catastrophic backtracking.
+3. If your previous pattern missed fields in the middle (e.g. policy, bytes_sent), DO NOT try to match every field sequentially. Use non-greedy wildcards (.*?) between the key-value pairs you need to extract:
+   e.g. src=(?P<src_ip>\\S+).*?dst=(?P<dst_ip>\\S+).*?proto=(?P<proto>\\S+).*?action=(?P<action>\\S+)
+4. CRITICAL: IP addresses contain dots (e.g. 10.10.10.25). Never use \\w+ for IPs; use \\d+\\.\\d+\\.\\d+\\.\\d+ or \\S+.
+5. For unquoted values, use \\S+ to match cleanly up to the next whitespace.
+6. Double-escape backslashes in JSON (\\\\d, \\\\s, \\\\S).
 
 Return ONLY a valid JSON object with this exact structure:
 {{
@@ -111,49 +119,66 @@ Do not include any explanation or Markdown outside the JSON.
 """
 
     def _extract_json(self, raw_response: str) -> Optional[Dict]:
-        """Extract and sanitize JSON dictionary from raw LLM output."""
+        """Extract and sanitize JSON dictionary from raw LLM output across code fences and escape quirks."""
         cleaned = raw_response.strip()
+
+        # 1. Strip markdown code blocks
         if "```json" in cleaned:
             cleaned = cleaned.split("```json")[1].split("```")[0].strip()
+        elif "```python" in cleaned:
+            cleaned = cleaned.split("```python")[1].split("```")[0].strip()
         elif "```" in cleaned:
             cleaned = cleaned.split("```")[1].split("```")[0].strip()
 
+        # 2. Extract outermost JSON braces
         start = cleaned.find("{")
         end = cleaned.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            snippet = cleaned[start:end + 1]
-        else:
-            snippet = cleaned
+        snippet = cleaned[start:end + 1] if (start != -1 and end != -1 and end > start) else cleaned
 
-        # 1. Direct standard parse
+        # Strategy A: Direct standard json.loads
         try:
             return json.loads(snippet)
-        except json.JSONDecodeError:
+        except Exception:
             pass
 
-        # 2. Sanitize unescaped regex backslashes common in LLM outputs (\s, \d, \w, \.)
+        # Strategy B: Sanitize invalid single backslashes common in regex output (\d, \s, \w, \.)
         try:
             sanitized = re.sub(r'\\(?![\\"/bfnrt]|u[0-9a-fA-F]{4})', r'\\\\', snippet)
             return json.loads(sanitized)
         except Exception:
             pass
 
-        # 3. Targeted field extraction fallback via regex
-        pattern_match = re.search(r'"regex_pattern"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', snippet)
-        if pattern_match:
-            try:
-                raw_pattern = pattern_match.group(1).encode('utf-8').decode('unicode_escape')
+        # Strategy C: Python AST literal evaluation (handles single quotes and r"..." raw strings)
+        try:
+            res = ast.literal_eval(snippet)
+            if isinstance(res, dict) and "regex_pattern" in res:
+                return res
+        except Exception:
+            pass
+
+        # Strategy D: Regex fallback extracting regex_pattern and field_mappings directly
+        try:
+            pattern_match = re.search(
+                r'["\']regex_pattern["\']\s*:\s*r?["\'](.*?)["\']\s*(?:,\s*["\']field_mappings["\']|\s*\})',
+                snippet,
+                flags=re.DOTALL
+            )
+            mapping_match = re.search(r'["\']field_mappings["\']\s*:\s*\{([^}]+)\}', snippet)
+
+            if pattern_match:
+                raw_pattern = pattern_match.group(1).strip()
                 mappings = {}
-                mapping_block = re.search(r'"field_mappings"\s*:\s*\{([^}]+)\}', snippet)
-                if mapping_block:
-                    for kv in re.finditer(r'"([^"]+)"\s*:\s*"([^"]+)"', mapping_block.group(1)):
+                if mapping_match:
+                    for kv in re.finditer(r'["\']([^"\']+)["\']\s*:\s*["\']([^"\']+)["\']', mapping_match.group(1)):
                         mappings[kv.group(1)] = kv.group(2)
+                else:
+                    mappings = {k: k for k in ["src_ip", "dst_ip", "proto", "action"]}
                 return {
                     "regex_pattern": raw_pattern,
                     "field_mappings": mappings
                 }
-            except Exception:
-                return None
+        except Exception:
+            pass
 
         return None
 
@@ -220,6 +245,7 @@ Do not include any explanation or Markdown outside the JSON.
 
             # 4. Verify that named groups extract values from samples
             extraction_valid = True
+            semantic_error = ""
             for sample in sample_logs:
                 m = compiled.search(sample)
                 if not m:
@@ -230,8 +256,23 @@ Do not include any explanation or Markdown outside the JSON.
                     extraction_valid = False
                     break
 
+                # Semantic IP Integrity Gate: src_ip and dst_ip must look like valid IPs
+                src_val = extracted.get(field_mappings.get("src_ip", ""), "")
+                dst_val = extracted.get(field_mappings.get("dst_ip", ""), "")
+
+                for field_name, val in [("src_ip", src_val), ("dst_ip", dst_val)]:
+                    if val and ("=" in val or not re.search(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}", val)):
+                        extraction_valid = False
+                        semantic_error = (
+                            f"Field '{field_name}' extracted '{val}', which is NOT a valid IP address. "
+                            f"You must anchor capture groups to their key names (e.g., src=(?P<{field_name}>\\S+))."
+                        )
+                        break
+                if not extraction_valid:
+                    break
+
             if is_valid and coverage == 1.0 and extraction_valid:
-                rprint(f"    [green]✓ Sandbox Passed:[/green] 100% sample coverage & named groups verified.")
+                rprint(f"    [green]✓ Sandbox Passed:[/green] 100% sample coverage & semantic IP integrity verified.")
                 definition = ParserDefinition(
                     parser_id=parser_id,
                     parser_version="1.0.0",
@@ -246,7 +287,8 @@ Do not include any explanation or Markdown outside the JSON.
 
             # Prepare reflection prompt for next iteration
             last_failed_pattern = regex_pattern
-            error_msg = f"{reason} (Coverage: {coverage * 100:.1f}%, Field Extraction Valid: {extraction_valid})"
+            error_reason = semantic_error if semantic_error else reason
+            error_msg = f"{error_reason} (Coverage: {coverage * 100:.1f}%, Field Extraction Valid: {extraction_valid})"
             rprint(f"    [yellow]⚠ Reflexion Loop Triggered:[/yellow] {error_msg}")
             current_prompt = self.build_reflection_prompt(sample_logs, last_failed_pattern, error_msg)
 
