@@ -5,7 +5,7 @@ from ulpf.registry import DynamicParserRegistry
 
 
 class DeterministicEngine:
-    """High-throughput data plane parser for known and dynamically registered log formats[cite: 1]."""
+    """High-throughput data plane parser for known and dynamically registered log formats."""
 
     def __init__(self, registry: Optional[DynamicParserRegistry] = None):
         self.registry = registry or DynamicParserRegistry()
@@ -22,20 +22,21 @@ class DeterministicEngine:
 
         # 3. Linux SSH / Auth Syslog Header Signature
         self.auth_pattern = re.compile(
-            r"sshd\[\d+\]:\s+(?P<message>Failed password|Accepted publickey|Invalid user|Connection closed)\b"
+            r"sshd\[\d+\]:\s+(?P<message>Failed password|Accepted password|Accepted publickey|Invalid user|Connection closed)\b"
         )
 
     def _normalize_disposition(self, action: str) -> str:
-        """Map heterogeneous action verbs into standard OCSF disposition[cite: 1]."""
-        act_lower = action.lower()
-        if act_lower in ["deny", "drop", "reject", "reset-both", "block", "failed", "failed password", "invalid user"]:
+        """Map heterogeneous action verbs into standard OCSF disposition."""
+        act_lower = str(action).lower().strip()
+        if any(k in act_lower for k in ["deny", "drop", "reject", "block", "fail", "invalid"]):
             return "Blocked"
-        elif act_lower in ["allow", "accept", "pass", "accepted", "accepted publickey"]:
+        elif any(k in act_lower for k in ["allow", "permit", "accept"]) or re.search(r"\bpass(?:ed)?\b", act_lower):
             return "Allowed"
-        return "Unknown"
+        else:
+            return "Unknown"
 
     def parse_and_normalize(self, envelope: EventEnvelope) -> Tuple[bool, EventEnvelope]:
-        """Attempt built-in parsers, then dynamic registry, then route to PENDING_AI[cite: 1]."""
+        """Attempt built-in parsers, then dynamic registry, then route to PENDING_AI."""
         raw = envelope.raw_payload
 
         # Check 1: Palo Alto CEF Format
@@ -112,11 +113,11 @@ class DeterministicEngine:
             envelope.status = EventStatus.COMMITTED
             return True, envelope
 
-        # Check 4: Dynamic Hot-Loaded Parsers in Registry[cite: 1]
+        # Check 4: Dynamic Hot-Loaded Parsers in Registry
         success, dyn_envelope = self.registry.apply_parsers(envelope)
         if success:
             return True, dyn_envelope
 
-        # No parser matched -> Route to AI Agent Queue[cite: 1]
+        # No parser matched -> Route to AI Agent Queue
         envelope.status = EventStatus.PENDING_AI
         return False, envelope
