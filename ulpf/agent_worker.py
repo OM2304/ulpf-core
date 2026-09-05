@@ -55,32 +55,34 @@ class AgentWorker:
         self.total_committed = 0
 
     def process_once(self) -> Dict[str, int]:
-        """Execute a single triage cycle across pending spool events."""
-        stats = self.agent.triage_pending_spool(
-            engine=self.engine,
-            storage=self.storage,
-            batch_size=self.batch_size
-        )
-
-        triaged = stats.get("triaged", 0)
-        if triaged > 0:
-            clusters = stats.get("clusters_detected", 0)
-            onboarded = stats.get("onboarded_parsers", 0)
-            committed = stats.get("committed", 0)
-
-            self.total_triaged += triaged
-            self.total_clusters += clusters
-            self.total_parsers_onboarded += onboarded
-            self.total_committed += committed
-
-            rprint(
-                f"[bold green]✓ Triage Cycle Complete:[/bold green] "
-                f"Triaged [bold]{triaged}[/bold] events in [cyan]{clusters}[/cyan] cluster(s) | "
-                f"Onboarded [magenta]{onboarded}[/magenta] new parser(s) | "
-                f"Committed [green]{committed}[/green] OCSF events."
+            """Execute a single triage cycle across pending spool events."""
+            stats = self.agent.triage_pending_spool(
+                engine=self.engine,
+                storage=self.storage,
+                batch_size=self.batch_size
             )
 
-        return stats
+            triaged = stats.get("triaged", 0)
+            if triaged > 0:
+                clusters = stats.get("clusters_detected", 0)
+                onboarded = stats.get("onboarded_parsers", 0)
+                committed = stats.get("committed", 0)
+
+                self.total_triaged += triaged
+                self.total_clusters += clusters
+                self.total_parsers_onboarded += onboarded
+                self.total_committed += committed
+
+                rprint(
+                    f"[bold green]✓ Triage Cycle Complete:[/bold green] "
+                    f"Triaged [bold]{triaged}[/bold] events in [cyan]{clusters}[/cyan] cluster(s) | "
+                    f"Onboarded [magenta]{onboarded}[/magenta] new parser(s) | "
+                    f"Committed [green]{committed}[/green] OCSF events."
+                )
+            else:
+                rprint("[yellow]ℹ Queue empty:[/yellow] No events in PENDING_AI status found in current spool.")
+
+            return stats
 
     async def run(self):
         """Asynchronous execution loop that continuously polls the spool."""
