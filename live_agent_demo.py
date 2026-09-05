@@ -19,13 +19,21 @@ console = Console()
 
 DEMO_SPOOL_DB = "demo_live_spool.db"
 DEMO_STORAGE_DB = "demo_live_storage.db"
+DEMO_GENERATED_PARSER = os.path.join("ulpf", "parsers", "generated", "dynamic_ai_parser_1.json")
 
 
 def cleanup_demo_dbs():
-    """Remove previous demo databases for clean reproduction."""
+    """Remove previous demo databases and generated demo parser for clean reproduction."""
     for db in [DEMO_SPOOL_DB, DEMO_STORAGE_DB]:
         if os.path.exists(db):
             os.remove(db)
+
+    # Clean previous demo parser to demonstrate fresh Ollama synthesis every run
+    if os.path.exists(DEMO_GENERATED_PARSER):
+        try:
+            os.remove(DEMO_GENERATED_PARSER)
+        except OSError:
+            pass
 
 
 def main():
@@ -36,7 +44,7 @@ def main():
 
     spool = DurableSpool(db_path=DEMO_SPOOL_DB)
     storage = NormalizedStorage(db_path=DEMO_STORAGE_DB)
-    registry = DynamicParserRegistry()
+    registry = DynamicParserRegistry(storage_dir=os.path.join("ulpf", "parsers", "generated"))
     engine = DeterministicEngine(registry=registry)
     coordinator = PipelineCoordinator(spool=spool, engine=engine, storage=storage)
     agent = ParserSynthesisAgent(registry=registry, spool=spool, model_name="qwen2.5-coder:3b")
@@ -88,6 +96,7 @@ def main():
         rprint(f"[bold green]✓ Dynamic Parser Synthesized & Verified in Sandbox![/bold green] ({agent_elapsed:.2f}s)")
         rprint(f"  • Onboarded Parsers: [green]{triage_stats['onboarded_parsers']}[/green]")
         rprint(f"  • Spool Triaged & Committed: [green]{triage_stats['committed']}[/green]")
+        rprint(f"  • [cyan]Persisted to Disk:[/cyan] ulpf/parsers/generated/dynamic_ai_parser_1.json")
     else:
         rprint("[bold red]✗ Agent could not synthesize a valid parser meeting 100% sandbox criteria.[/bold red]")
         sys.exit(1)
@@ -133,6 +142,19 @@ def main():
 
     console.print(table)
     rprint(f"[bold green]✓ SUCCESS:[/bold green] All {len(rows)}/{len(raw_logs)} logs normalized into OCSF without human intervention.")
+
+    # ---------------------------------------------------------
+    # STAGE 4: COLD-BOOT HYDRATION VERIFICATION
+    # ---------------------------------------------------------
+    console.rule("[bold blue]Stage 4: Cold-Boot Persistence & Hydration Verification[/bold blue]")
+    rprint("Simulating service restart: Initializing a fresh DynamicParserRegistry from disk...")
+    reboot_registry = DynamicParserRegistry(storage_dir=os.path.join("ulpf", "parsers", "generated"))
+    persisted_parsers = reboot_registry.list_parsers()
+
+    rprint(f"[bold green]✓ Cold-Boot Hydration Complete:[/bold green] Loaded [bold]{len(persisted_parsers)}[/bold] parser(s) from disk without LLM inference.")
+    for p_id in persisted_parsers:
+        p_obj = reboot_registry.get_parser(p_id)
+        rprint(f"  • Parser: [magenta]{p_id}[/magenta] -> Pattern: [italic]{p_obj.regex_pattern}[/italic]")
 
 
 if __name__ == "__main__":
