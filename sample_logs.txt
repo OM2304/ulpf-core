@@ -1,0 +1,6 @@
+Aug 31 14:15:20 auth-server sshd[12345]: Accepted password for root from 192.168.1.20 port 49152 ssh2
+CEF:0|Palo Alto Networks|PAN-OS|10.1.0|TRAFFIC|drop|1|src=10.0.0.15 dst=172.16.0.40 proto=UDP act=drop
+timestamp=2026-08-31T14:20:15Z device=FW-01 action=DENY src_ip=192.168.1.45 dst_ip=10.0.0.25 src_port=54321 dst_port=22 protocol=TCP rule="Block SSH" severity=HIGH
+timestamp=2026-08-31T14:20:16Z device=FW-01 action=DENY src_ip=192.168.1.46 dst_ip=10.0.0.25 src_port=54322 dst_port=22 protocol=TCP rule="Block SSH" severity=HIGH
+date=2026-08-31 time=14:21:03 device=FW-EDGE src=10.10.10.25 dst=172.16.1.50 src_port=44321 dst_port=80 proto=TCP action=ALLOW policy=WEB_ACCESS bytes_sent=1520 bytes_received=8432
+date=2026-08-31 time=14:21:04 device=FW-EDGE src=10.10.10.26 dst=172.16.1.50 src_port=44322 dst_port=80 proto=TCP action=ALLOW policy=WEB_ACCESS bytes_sent=1820 bytes_received=9120
