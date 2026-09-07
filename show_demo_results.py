@@ -3,51 +3,87 @@ import os
 import sqlite3
 from pathlib import Path
 
+from rich import print as rprint
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+
+console = Console()
 PARSERS_DIR = Path("ulpf/parsers/generated")
-DB_PATH = "live_demo_storage.db"
+DB_STORAGE = "live_demo_storage.db"
+DB_SPOOL = "live_demo_spool.db"
 
-def show_generated_parsers():
-    print("=" * 60)
-    print("1. AI-GENERATED PARSERS ON DISK (ulpf/parsers/generated/)")
-    print("=" * 60)
 
-    if not PARSERS_DIR.exists():
-        print(f"Directory '{PARSERS_DIR}' does not exist.\n")
+def show_parsers_table():
+    table = Table(title="Generated Dynamic Parsers (Disk Registry)", header_style="bold cyan", border_style="dim")
+    table.add_column("Parser ID", style="bold green")
+    table.add_column("Regex Pattern", style="yellow")
+    table.add_column("Mappings", style="magenta")
+
+    if not PARSERS_DIR.exists() or not list(PARSERS_DIR.glob("*.json")):
+        console.print(Panel("[dim]No dynamic parsers currently on disk.[/dim]", title="Dynamic Parsers"))
         return
 
-    json_files = list(PARSERS_DIR.glob("*.json"))
-    if not json_files:
-        print("No generated parser definitions found on disk.\n")
-        return
-
-    for p in json_files:
-        size = p.stat().st_size
-        print(f"\n[FILE] {p.name} ({size} bytes)")
+    for p in PARSERS_DIR.glob("*.json"):
         try:
             with open(p, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                print(f"  • Parser ID : {data.get('parser_id')}")
-                print(f"  • Pattern   : {data.get('regex_pattern')}")
-                print(f"  • Mappings  : {data.get('field_mappings')}")
-        except Exception as err:
-            print(f"  • Error reading {p.name}: {err}")
-    print()
+                mappings_str = ", ".join([f"{k}→{v}" for k, v in data.get("field_mappings", {}).items()])
+                table.add_row(data.get("parser_id", p.stem), data.get("regex_pattern", ""), mappings_str)
+        except Exception as e:
+            table.add_row(p.name, f"[red]Error: {e}[/red]", "")
 
-def show_normalized_events(limit: int = 5):
-    print("=" * 60)
-    print(f"2. NORMALIZED OCSF EVENTS (Database: {DB_PATH})")
-    print("=" * 60)
+    console.print(table)
 
-    if not os.path.exists(DB_PATH):
-        print(f"Database file '{DB_PATH}' not found.\n")
+
+def show_spool_table(limit: int = 6):
+    if not os.path.exists(DB_SPOOL):
         return
 
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
+    table = Table(title="Durable Spool Queue (`spool_events`)", header_style="bold blue", border_style="blue")
+    table.add_column("Event ID", style="bold")
+    table.add_column("SHA-256 (Forensic Hash)", style="dim")
+    table.add_column("Status", style="bold")
+    table.add_column("Parser Bound", style="cyan")
 
+    conn = sqlite3.connect(DB_SPOOL)
+    conn.row_factory = sqlite3.Row
     try:
-        rows = cursor.execute(
+        rows = conn.execute(
+            "SELECT event_id, raw_sha256, status, parser_id FROM spool_events ORDER BY rowid DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        for r in rows:
+            status_color = "green" if r["status"] == "COMMITTED" else "yellow"
+            table.add_row(
+                r["event_id"],
+                f"{r['raw_sha256'][:16]}...",
+                f"[{status_color}]{r['status']}[/{status_color}]",
+                r["parser_id"] or "unassigned",
+            )
+        console.print(table)
+    finally:
+        conn.close()
+
+
+def show_storage_table(limit: int = 6):
+    if not os.path.exists(DB_STORAGE):
+        console.print(Panel("[yellow]Storage database not found. Run demo first.[/yellow]"))
+        return
+
+    table = Table(title="OCSF Normalized Events (`normalized_events`)", header_style="bold green", border_style="green")
+    table.add_column("Event ID", style="bold white")
+    table.add_column("Parser", style="cyan")
+    table.add_column("Source Endpoint", style="bright_yellow")
+    table.add_column("Destination Endpoint", style="bright_cyan")
+    table.add_column("Protocol", style="magenta")
+    table.add_column("Action", style="white")
+    table.add_column("Disposition", style="bold")
+
+    conn = sqlite3.connect(DB_STORAGE)
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
             """
             SELECT event_id, parser_id, src_ip, src_port, dst_ip, dst_port, protocol, action, disposition
             FROM normalized_events
@@ -58,23 +94,31 @@ def show_normalized_events(limit: int = 5):
         ).fetchall()
 
         if not rows:
-            print("No normalized records found in 'normalized_events'.\n")
+            console.print(Panel("[dim]No normalized events found in database.[/dim]"))
             return
 
-        for idx, row in enumerate(rows, start=1):
-            r = dict(row)
-            print(f"\n[Event #{idx}] ID: {r['event_id']}")
-            print(f"  • Parser Used : {r['parser_id']}")
-            print(f"  • Source      : {r['src_ip']}:{r['src_port']}")
-            print(f"  • Destination : {r['dst_ip']}:{r['dst_port']}")
-            print(f"  • Protocol    : {r['protocol']}")
-            print(f"  • Action      : {r['action']} -> Disposition: {r['disposition']}")
-    except sqlite3.OperationalError as e:
-        print(f"Database error: {e}")
+        for r in rows:
+            src = f"{r['src_ip']}:{r['src_port']}" if r["src_port"] else str(r["src_ip"])
+            dst = f"{r['dst_ip']}:{r['dst_port']}" if r["dst_port"] else str(r["dst_ip"])
+            disp_style = "green" if r["disposition"] == "Allowed" else "red"
+            table.add_row(
+                r["event_id"],
+                r["parser_id"],
+                src,
+                dst,
+                r["protocol"] or "UNKNOWN",
+                r["action"] or "-",
+                f"[{disp_style}]{r['disposition']}[/{disp_style}]",
+            )
+        console.print(table)
     finally:
         conn.close()
-    print()
+
 
 if __name__ == "__main__":
-    show_generated_parsers()
-    show_normalized_events()
+    console.print()
+    show_parsers_table()
+    console.print()
+    show_spool_table()
+    console.print()
+    show_storage_table()
