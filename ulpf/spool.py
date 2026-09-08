@@ -1,5 +1,5 @@
 import sqlite3
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from ulpf.models import EventEnvelope, EventStatus
 
 
@@ -23,7 +23,7 @@ class DurableSpool:
         return conn
 
     def _init_db(self):
-        """Initialize the durable spool table schema if it does not exist."""
+        """Initialize the durable spool table schema with automated safe column migrations."""
         with self._get_connection() as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS spool_events (
@@ -33,16 +33,25 @@ class DurableSpool:
                     raw_payload TEXT NOT NULL,
                     status TEXT NOT NULL,
                     parser_id TEXT,
-                    source_transport TEXT DEFAULT 'direct'
+                    source_transport TEXT DEFAULT 'direct',
+                    retry_count INTEGER DEFAULT 0,
+                    last_error TEXT
                 );
             """)
+            # Non-destructive migrations for existing databases
+            for col_sql in [
+                "ALTER TABLE spool_events ADD COLUMN retry_count INTEGER DEFAULT 0;",
+                "ALTER TABLE spool_events ADD COLUMN last_error TEXT;",
+            ]:
+                try:
+                    conn.execute(col_sql)
+                except sqlite3.OperationalError:
+                    # Column already exists in this database
+                    pass
             conn.commit()
 
     def persist_raw(self, payload: str, transport: str = "direct") -> EventEnvelope:
-        """Create an EventEnvelope, persist it to SQLite disk spool, and return the envelope.
-        
-        Sets lifecycle state to DURABLY_STORED upon successful disk commit.
-        """
+        """Create an EventEnvelope, persist it to SQLite disk spool, and return the envelope."""
         envelope = EventEnvelope(
             raw_payload=payload,
             source_transport=transport,
@@ -55,17 +64,19 @@ class DurableSpool:
         """Insert or replace an event envelope into the durable SQLite spool."""
         status_val = envelope.status.value if hasattr(envelope.status, "value") else str(envelope.status)
         
-        # Safely extract timestamp attribute across schema variations (received_at / arrival_timestamp)
+        # Safely extract timestamp attribute across schema variations
         ts = getattr(envelope, "received_at", getattr(envelope, "arrival_timestamp", None))
         timestamp_str = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
         transport = getattr(envelope, "source_transport", "direct")
+        retries = getattr(envelope, "retry_count", 0)
+        err = getattr(envelope, "last_error", None)
 
         with self._get_connection() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO spool_events (
-                    event_id, received_at, raw_sha256, raw_payload, status, parser_id, source_transport
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    event_id, received_at, raw_sha256, raw_payload, status, parser_id, source_transport, retry_count, last_error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     envelope.event_id,
@@ -75,6 +86,8 @@ class DurableSpool:
                     status_val,
                     envelope.parser_id,
                     transport,
+                    retries,
+                    err,
                 ),
             )
             conn.commit()
@@ -98,7 +111,8 @@ class DurableSpool:
         with self._get_connection() as conn:
             rows = conn.execute(
                 """
-                SELECT event_id, received_at, raw_sha256, raw_payload, status, parser_id, source_transport
+                SELECT event_id, received_at, raw_sha256, raw_payload, status, parser_id, source_transport,
+                       COALESCE(retry_count, 0) AS retry_count, last_error
                 FROM spool_events
                 WHERE status IN ('RECEIVED', 'DURABLY_STORED', 'PENDING')
                 ORDER BY rowid ASC
@@ -122,22 +136,109 @@ class DurableSpool:
                 source_transport=r["source_transport"] if "source_transport" in r.keys() and r["source_transport"] else "direct",
                 status=status_enum,
                 parser_id=r["parser_id"],
+                retry_count=r["retry_count"] if "retry_count" in r.keys() and r["retry_count"] is not None else 0,
+                last_error=r["last_error"] if "last_error" in r.keys() else None,
             )
             events.append(env)
         return events
 
-    def update_status(self, event_id: str, status: EventStatus, parser_id: Optional[str] = None) -> None:
-        """Update the lifecycle status and parser association of a spooled event."""
+    def update_status(
+        self, 
+        event_id: str, 
+        status: EventStatus, 
+        parser_id: Optional[str] = None,
+        error_msg: Optional[str] = None
+    ) -> None:
+        """Update the lifecycle status, parser association, and optional error state of a spooled event."""
         status_val = status.value if hasattr(status, "value") else str(status)
         with self._get_connection() as conn:
-            if parser_id:
+            if parser_id and error_msg:
+                conn.execute(
+                    "UPDATE spool_events SET status = ?, parser_id = ?, last_error = ? WHERE event_id = ?",
+                    (status_val, parser_id, error_msg, event_id),
+                )
+            elif parser_id:
                 conn.execute(
                     "UPDATE spool_events SET status = ?, parser_id = ? WHERE event_id = ?",
                     (status_val, parser_id, event_id),
+                )
+            elif error_msg:
+                conn.execute(
+                    "UPDATE spool_events SET status = ?, last_error = ? WHERE event_id = ?",
+                    (status_val, error_msg, event_id),
                 )
             else:
                 conn.execute(
                     "UPDATE spool_events SET status = ? WHERE event_id = ?",
                     (status_val, event_id),
                 )
+            conn.commit()
+
+    # --- Dead-Letter & Poison Pill Governance ---
+
+    def get_pending_ai_ids(self) -> List[str]:
+        """Return IDs of all events currently awaiting AI triage."""
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT event_id FROM spool_events WHERE status = 'PENDING_AI'"
+            ).fetchall()
+            return [r["event_id"] for r in rows]
+
+    def increment_retries(
+        self, 
+        event_ids: List[str], 
+        error_reason: str = "AI synthesis failed", 
+        max_retries: int = 3
+    ) -> List[str]:
+        """Increment retry count for specified events.
+        
+        Quarantines events that reach or exceed max_retries into QUARANTINED status
+        to prevent infinite triage retry loops.
+        Returns a list of event IDs that were transitioned to QUARANTINED.
+        """
+        if not event_ids:
+            return []
+
+        quarantined = []
+        with self._get_connection() as conn:
+            for ev_id in event_ids:
+                row = conn.execute(
+                    "SELECT retry_count FROM spool_events WHERE event_id = ?",
+                    (ev_id,)
+                ).fetchone()
+                if not row:
+                    continue
+
+                current_retries = row["retry_count"] if row["retry_count"] is not None else 0
+                new_retries = current_retries + 1
+
+                if new_retries >= max_retries:
+                    conn.execute(
+                        """
+                        UPDATE spool_events 
+                        SET retry_count = ?, status = ?, last_error = ?
+                        WHERE event_id = ?
+                        """,
+                        (new_retries, EventStatus.QUARANTINED.value, f"Max retries ({max_retries}) exceeded: {error_reason}", ev_id),
+                    )
+                    quarantined.append(ev_id)
+                else:
+                    conn.execute(
+                        """
+                        UPDATE spool_events 
+                        SET retry_count = ?, last_error = ?
+                        WHERE event_id = ?
+                        """,
+                        (new_retries, error_reason, ev_id),
+                    )
+            conn.commit()
+        return quarantined
+
+    def quarantine_event(self, event_id: str, reason: str) -> None:
+        """Immediately transition an unparseable or malicious log to QUARANTINED status."""
+        with self._get_connection() as conn:
+            conn.execute(
+                "UPDATE spool_events SET status = ?, last_error = ? WHERE event_id = ?",
+                (EventStatus.QUARANTINED.value, reason, event_id),
+            )
             conn.commit()

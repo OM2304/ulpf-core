@@ -15,6 +15,7 @@ class EventStatus(str, Enum):
     PENDING_AI = "PENDING_AI"
     RETRY = "RETRY"
     QUARANTINED = "QUARANTINED"
+    DEAD_LETTER = "DEAD_LETTER"  # Permanent dead-letter quarantine for unparseable poison pills
 
 
 class OCSFNetworkActivity(BaseModel):
@@ -40,6 +41,10 @@ class EventEnvelope(BaseModel):
     parser_id: Optional[str] = None
     parser_version: Optional[str] = None
     ocsf_event: Optional[OCSFNetworkActivity] = None
+    
+    # Poison-pill tracking & dead-letter telemetry
+    retry_count: int = Field(default=0)
+    last_error: Optional[str] = Field(default=None)
 
     def model_post_init(self, __context: Any) -> None:
         """Automatically compute SHA-256 if not provided."""
