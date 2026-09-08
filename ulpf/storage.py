@@ -88,3 +88,81 @@ class NormalizedStorage:
             if row:
                 return dict(row)
         return None
+
+    def list_events(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        search: str = "",
+        disposition_filter: str = ""
+    ) -> list:
+        """Paginated query of committed OCSF events for the analytical dashboard table."""
+        base_query = "SELECT * FROM normalized_events"
+        conditions = []
+        params = []
+
+        if search:
+            conditions.append(
+                "(src_ip LIKE ? OR dst_ip LIKE ? OR action LIKE ? OR parser_id LIKE ? OR raw_payload LIKE ?)"
+            )
+            like = f"%{search}%"
+            params.extend([like, like, like, like, like])
+
+        if disposition_filter:
+            conditions.append("disposition = ?")
+            params.append(disposition_filter)
+
+        if conditions:
+            base_query += " WHERE " + " AND ".join(conditions)
+
+        base_query += " ORDER BY received_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        with self._get_connection() as conn:
+            conn.row_factory = __import__('sqlite3').Row
+            rows = conn.execute(base_query, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_total_event_count(self, search: str = "", disposition_filter: str = "") -> int:
+        """Return total committed event count (with optional filter) for pagination."""
+        base_query = "SELECT COUNT(*) FROM normalized_events"
+        conditions = []
+        params = []
+
+        if search:
+            conditions.append(
+                "(src_ip LIKE ? OR dst_ip LIKE ? OR action LIKE ? OR parser_id LIKE ? OR raw_payload LIKE ?)"
+            )
+            like = f"%{search}%"
+            params.extend([like, like, like, like, like])
+
+        if disposition_filter:
+            conditions.append("disposition = ?")
+            params.append(disposition_filter)
+
+        if conditions:
+            base_query += " WHERE " + " AND ".join(conditions)
+
+        with self._get_connection() as conn:
+            row = conn.execute(base_query, params).fetchone()
+        return row[0] if row else 0
+
+    def get_stats(self) -> dict:
+        """Return aggregated stats: total, by disposition, unique parsers, unique src IPs."""
+        with self._get_connection() as conn:
+            total = conn.execute("SELECT COUNT(*) FROM normalized_events").fetchone()[0]
+            by_disposition = conn.execute(
+                "SELECT disposition, COUNT(*) FROM normalized_events GROUP BY disposition"
+            ).fetchall()
+            by_parser = conn.execute(
+                "SELECT parser_id, COUNT(*) FROM normalized_events GROUP BY parser_id ORDER BY COUNT(*) DESC"
+            ).fetchall()
+            unique_src = conn.execute(
+                "SELECT COUNT(DISTINCT src_ip) FROM normalized_events WHERE src_ip IS NOT NULL"
+            ).fetchone()[0]
+        return {
+            "total_committed": total,
+            "by_disposition": {r[0]: r[1] for r in by_disposition},
+            "by_parser": {r[0]: r[1] for r in by_parser},
+            "unique_src_ips": unique_src,
+        }
