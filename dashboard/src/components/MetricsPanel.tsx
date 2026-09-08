@@ -5,19 +5,16 @@ interface Props {
   loading: boolean;
 }
 
-interface MetricCardProps {
-  label: string;
-  value: number | string;
-  sub?: string;
-  color: string;
-}
-
-function MetricCard({ label, value, sub, color }: MetricCardProps) {
+function MetricCell({ label, value, sub, color = 'var(--text)' }: {
+  label: string; value: string | number; sub?: string; color?: string;
+}) {
   return (
-    <div className={`metric-card ${color}`}>
-      <div className="label">{label}</div>
-      <div className="value">{typeof value === 'number' ? value.toLocaleString() : value}</div>
-      {sub && <div className="sub">{sub}</div>}
+    <div className="console-metric-cell">
+      <div className="metric-label">{label}</div>
+      <div className="metric-value" style={{ fontSize: 24, color }}>
+        {typeof value === 'number' ? value.toLocaleString() : value}
+      </div>
+      {sub && <div className="metric-sub">{sub}</div>}
     </div>
   );
 }
@@ -25,102 +22,68 @@ function MetricCard({ label, value, sub, color }: MetricCardProps) {
 export default function MetricsPanel({ metrics, loading }: Props) {
   if (loading && !metrics) {
     return (
-      <div className="card fade-in">
-        <div className="card-header">
-          <span className="icon">📊</span>
-          <h2>Pipeline Metrics</h2>
-        </div>
-        <div className="card-body">
-          <div className="metric-grid">
-            {[...Array(6)].map((_, i) => (
-              <div key={i} className="loading-shimmer" />
-            ))}
-          </div>
-        </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {[...Array(3)].map((_, i) => (
+          <div key={i} className="shimmer" style={{ height: 20 }} />
+        ))}
       </div>
     );
   }
-
   if (!metrics) return null;
 
   const { spool, worker, storage } = metrics;
 
   return (
-    <div className="card fade-in">
-      <div className="card-header">
-        <span className="icon">📊</span>
-        <h2>Pipeline Metrics</h2>
-        <span className="badge cyan" style={{ marginLeft: 'auto' }}>
-          OCSF Class 4001
-        </span>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      {/* Spool */}
+      <div>
+        <div className="t-label" style={{ marginBottom: 10 }}>Durable Spool (WAL-SQLite)</div>
+        <div className="console-metric-grid">
+          <MetricCell label="TOTAL SPOOLED" value={spool.total} sub="all-time events" color="var(--text)" />
+          <MetricCell label="COMMITTED"     value={spool.committed} sub="OCSF normalized" color="var(--success)" />
+          <MetricCell label="PENDING AI"    value={spool.pending_ai} sub="awaiting synthesis" color="var(--warning)" />
+          <MetricCell label="STORED"        value={spool.durably_stored} sub="durably persisted" color="var(--accent)" />
+        </div>
       </div>
-      <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
 
-        {/* Spool Section */}
-        <div>
-          <div className="section-title">Durable Spool (WAL-SQLite)</div>
-          <div className="metric-grid">
-            <MetricCard label="Total Spooled" value={spool.total} color="cyan" sub="all-time events" />
-            <MetricCard label="Committed" value={spool.committed} color="green" sub="OCSF normalized" />
-            <MetricCard label="Pending AI" value={spool.pending_ai} color="orange" sub="awaiting synthesis" />
-            <MetricCard label="Durably Stored" value={spool.durably_stored} color="purple" sub="raw persisted" />
-          </div>
+      {/* Worker */}
+      <div>
+        <div className="t-label" style={{ marginBottom: 10 }}>AI Agent Worker</div>
+        <div className="console-metric-grid">
+          <MetricCell label="TRIAGED"  value={worker.total_triaged}           sub={`batch: ${worker.batch_size}`} color="var(--accent)" />
+          <MetricCell label="CLUSTERS" value={worker.total_clusters}          sub="structural groups" color="var(--processing)" />
+          <MetricCell label="PARSERS"  value={worker.total_parsers_onboarded} sub="AI-synthesized" color="var(--success)" />
+          <MetricCell label="COMMITTED"value={worker.total_committed}          sub="via AI path" color="var(--success)" />
         </div>
+      </div>
 
-        {/* Agent Worker Section */}
-        <div>
-          <div className="section-title">AI Agent Worker (AgentWorker)</div>
-          <div className="metric-grid">
-            <MetricCard label="Total Triaged" value={worker.total_triaged} color="cyan" sub={`batch: ${worker.batch_size}`} />
-            <MetricCard label="Clusters Detected" value={worker.total_clusters} color="purple" sub="structural groups" />
-            <MetricCard label="Parsers Onboarded" value={worker.total_parsers_onboarded} color="green" sub="AI-synthesized" />
-            <MetricCard label="Events Committed" value={worker.total_committed} color="green" sub="via AI path" />
-          </div>
+      {/* Storage */}
+      <div>
+        <div className="t-label" style={{ marginBottom: 10 }}>Normalized Storage</div>
+        <div className="console-metric-grid">
+          <MetricCell label="TOTAL"    value={storage.total_committed} sub="OCSF events"     color="var(--success)" />
+          <MetricCell label="SRC IPs"  value={storage.unique_src_ips}  sub="unique sources"  color="var(--accent)" />
+          <MetricCell label="ALLOWED"  value={storage.by_disposition?.Allowed ?? 0} sub="disposition" color="var(--success)" />
+          <MetricCell label="BLOCKED"  value={storage.by_disposition?.Blocked ?? 0} sub="disposition" color="var(--error)" />
         </div>
+      </div>
 
-        {/* Storage Section */}
-        <div>
-          <div className="section-title">Normalized Storage</div>
-          <div className="metric-grid">
-            <MetricCard label="Total Committed" value={storage.total_committed} color="green" sub="OCSF events" />
-            <MetricCard label="Unique Src IPs" value={storage.unique_src_ips} color="cyan" sub="distinct sources" />
-            {Object.entries(storage.by_disposition || {}).map(([disp, cnt]) => (
-              <MetricCard
-                key={disp}
-                label={disp}
-                value={cnt}
-                color={disp === 'Allowed' ? 'green' : disp === 'Blocked' ? 'red' : 'orange'}
-                sub="disposition"
-              />
-            ))}
+      {/* Worker config */}
+      <div style={{
+        background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 'var(--radius)',
+        padding: '14px 16px', display: 'flex', gap: 24, flexWrap: 'wrap',
+      }}>
+        {[
+          { k: 'Status',        v: worker.is_running ? 'RUNNING' : 'STOPPED',
+            c: worker.is_running ? 'var(--success)' : 'var(--warning)' },
+          { k: 'Poll Interval', v: `${worker.poll_interval}s`,      c: 'var(--text-2)' },
+          { k: 'Batch Size',    v: `${worker.batch_size} events`,   c: 'var(--text-2)' },
+        ].map(({ k, v, c }) => (
+          <div key={k}>
+            <div style={{ fontSize: 9, fontFamily: 'var(--font-mono)', color: 'var(--text-3)', letterSpacing: '0.08em', marginBottom: 3 }}>{k}</div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: c, fontWeight: 600 }}>{v}</div>
           </div>
-        </div>
-
-        {/* Worker status row */}
-        <div>
-          <div className="section-title">Worker Configuration</div>
-          <div className="worker-row">
-            <span className="wlabel">Status</span>
-            <span className={`badge ${worker.is_running ? 'green' : 'orange'}`}>
-              <span className="dot" />
-              {worker.is_running ? 'Running' : 'Stopped'}
-            </span>
-          </div>
-          <div className="worker-row">
-            <span className="wlabel">Poll Interval</span>
-            <span className="wvalue">{worker.poll_interval}s</span>
-          </div>
-          <div className="worker-row">
-            <span className="wlabel">Batch Size</span>
-            <span className="wvalue">{worker.batch_size} events</span>
-          </div>
-          {Object.entries(storage.by_parser || {}).slice(0, 3).map(([pid, cnt]) => (
-            <div className="worker-row" key={pid}>
-              <span className="wlabel mono">{pid}</span>
-              <span className="wvalue">{cnt} events</span>
-            </div>
-          ))}
-        </div>
+        ))}
       </div>
     </div>
   );
