@@ -141,3 +141,32 @@ class DurableSpool:
                     (status_val, event_id),
                 )
             conn.commit()
+
+    def get_status_counts(self) -> dict:
+        """Return a count of spool events grouped by lifecycle status."""
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) as cnt FROM spool_events GROUP BY status"
+            ).fetchall()
+        return {row[0]: row[1] for row in rows}
+
+    def get_total_count(self) -> int:
+        """Return total number of events ever spooled."""
+        with self._get_connection() as conn:
+            row = conn.execute("SELECT COUNT(*) FROM spool_events").fetchone()
+        return row[0] if row else 0
+
+    def get_recent_pending_ai(self, limit: int = 100) -> list:
+        """Return recent PENDING_AI raw payloads for cluster skeleton extraction."""
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT event_id, raw_payload, received_at
+                FROM spool_events
+                WHERE status = 'PENDING_AI'
+                ORDER BY rowid DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [{"event_id": r[0], "raw_payload": r[1], "received_at": r[2]} for r in rows]
