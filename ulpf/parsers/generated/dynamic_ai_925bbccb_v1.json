@@ -1,0 +1,12 @@
+{
+  "parser_id": "dynamic_ai_925bbccb_v1",
+  "parser_version": "1.0.0",
+  "description": "AI-synthesized dynamic parser (validated via sandbox reflexion)",
+  "regex_pattern": "srcip=(?P<src_ip>\\d+\\.\\d+\\.\\d+\\.\\d+).*?dstip=(?P<dst_ip>\\d+\\.\\d+\\.\\d+\\.\\d+).*?proto=(?P<proto>\\S+).*?action=(?P<action>\\S+)",
+  "field_mappings": {
+    "src_ip": "src_ip",
+    "dst_ip": "dst_ip",
+    "proto": "proto",
+    "action": "action"
+  }
+}

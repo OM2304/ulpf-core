@@ -1,0 +1,12 @@
+{
+  "parser_id": "dynamic_ai_c0b084d9_v1",
+  "parser_version": "1.0.0",
+  "description": "AI-synthesized dynamic parser (validated via sandbox reflexion)",
+  "regex_pattern": "date=(?P<date>\\d{4}-\\d{2}-\\d{2}) time=(?P<time>\\d{2}:\\d{2}:\\d{2}) device=ASA-5505 src=(?P<src_ip>\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}) dst=(?P<dst_ip>\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}) src_port=(?P<src_port>\\d+) dst_port=(?P<dst_port>\\d+) proto=(?P<proto>\\S+) action=(?P<action>\\S+)",
+  "field_mappings": {
+    "src_ip": "src_ip",
+    "dst_ip": "dst_ip",
+    "proto": "proto",
+    "action": "action"
+  }
+}

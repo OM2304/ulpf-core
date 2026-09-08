@@ -23,6 +23,7 @@ htmlcov/
 *.sqlite3
 
 # OS / Editor Artifacts
+node_modules/
 .vscode/
 .idea/
 *.swp

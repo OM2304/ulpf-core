@@ -191,10 +191,77 @@ async def spool_metrics() -> MetricsResponse:
     )
 
 
+@app.get("/api/v1/spool/events")
+async def spool_events(
+    limit: int = Query(default=50, ge=1, le=500),
+    status_filter: Optional[str] = Query(default=None, alias="status"),
+) -> List[Dict[str, Any]]:
+    spool, _, _, _, _ = _components(app)
+    query = """
+        SELECT event_id, received_at, raw_sha256, raw_payload, status,
+               parser_id, COALESCE(retry_count, 0) AS retry_count
+        FROM spool_events
+    """
+    parameters: List[Any] = []
+    if status_filter is not None:
+        query += " WHERE status = ?"
+        parameters.append(status_filter)
+    query += " ORDER BY received_at DESC LIMIT ?"
+    parameters.append(limit)
+    try:
+        with sqlite3.connect(spool.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(query, parameters).fetchall()
+    except sqlite3.Error as exc:
+        raise HTTPException(status_code=500, detail=f"spool query failed: {exc}") from exc
+
+    return [
+        {
+            "event_id": str(row["event_id"]),
+            "received_at": str(row["received_at"]),
+            "raw_sha256": str(row["raw_sha256"]),
+            "raw_payload": str(row["raw_payload"]),
+            "status": str(row["status"]),
+            "parser_id": row["parser_id"],
+            "retry_count": int(row["retry_count"] or 0),
+        }
+        for row in rows
+    ]
+
+
+def _builtin_parser_records() -> List[Dict[str, Any]]:
+    return [
+        {
+            "parser_id": "builtin_cef_panos_v1",
+            "regex_pattern": r"CEF:\d+\|(?P<vendor>[^|]+)\|(?P<product>[^|]+)\|[^|]+\|[^|]+\|(?P<raw_action>[^|]+)\|(?P<severity>[^|]+)\|(?P<extension>.*)",
+            "field_mappings": {
+                "src_ip": "src_endpoint.ip",
+                "dst_ip": "dst_endpoint.ip",
+                "proto": "connection_info.protocol_name",
+                "action": "action",
+            },
+            "source_format": "Palo Alto CEF",
+            "origin": "builtin",
+        },
+        {
+            "parser_id": "builtin_linux_auth_v1",
+            "regex_pattern": r"sshd\[\d+\]:\s+(?P<message>Failed password|Accepted password|Accepted publickey|Invalid user|Connection closed)\b",
+            "field_mappings": {
+                "src_ip": "src_endpoint.ip",
+                "dst_ip": "dst_endpoint.ip",
+                "proto": "connection_info.protocol_name",
+                "action": "action",
+            },
+            "source_format": "Linux SSH auth syslog",
+            "origin": "builtin",
+        },
+    ]
+
+
 @app.get("/api/v1/parsers")
 async def list_parsers() -> List[Dict[str, Any]]:
     _, _, registry, _, _ = _components(app)
-    parsers: List[Dict[str, Any]] = []
+    parsers: List[Dict[str, Any]] = _builtin_parser_records()
     for parser_id in registry.list_parsers():
         definition = registry.get_parser(parser_id)
         if definition is None:
@@ -216,7 +283,11 @@ async def list_events(
     disposition: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     _, storage, _, _, _ = _components(app)
-    query = "SELECT ocsf_json FROM normalized_events"
+    query = """
+        SELECT event_id, parser_id, src_ip, dst_ip, protocol, action,
+               disposition, raw_payload, raw_sha256, ocsf_json
+        FROM normalized_events
+    """
     parameters: List[Any] = []
     if disposition is not None:
         query += " WHERE disposition = ?"
@@ -225,8 +296,24 @@ async def list_events(
     parameters.extend([limit, offset])
     try:
         with sqlite3.connect(storage.db_path) as conn:
+            conn.row_factory = sqlite3.Row
             rows = conn.execute(query, parameters).fetchall()
-        return [json.loads(row[0]) for row in rows]
+        events: List[Dict[str, Any]] = []
+        for row in rows:
+            event = json.loads(row["ocsf_json"])
+            event.update({
+                "event_id": str(row["event_id"]),
+                "parser_id": str(row["parser_id"] or ""),
+                "src_ip": str(row["src_ip"] or ""),
+                "dst_ip": str(row["dst_ip"] or ""),
+                "protocol": str(row["protocol"] or ""),
+                "action": str(row["action"] or ""),
+                "disposition": str(row["disposition"] or ""),
+                "raw_payload": str(row["raw_payload"] or ""),
+                "raw_sha256": str(row["raw_sha256"] or ""),
+            })
+            events.append(event)
+        return events
     except (sqlite3.Error, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=500, detail=f"event query failed: {exc}") from exc
 

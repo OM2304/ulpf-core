@@ -1,0 +1,12 @@
+{
+  "parser_id": "dynamic_ai_756ff310_v1",
+  "parser_version": "1.0.0",
+  "description": "AI-synthesized dynamic parser (validated via sandbox reflexion)",
+  "regex_pattern": "timestamp=(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z)\\s+fw_id=(?P<fw_id>\\S+)\\s+client_ip=(?P<client_ip>\\d+\\.\\d+\\.\\d+\\.\\d+)\\s+target_ip=(?P<dst_ip>\\d+\\.\\d+\\.\\d+\\.\\d+)\\s+proto=(?P<proto>\\S+)\\s+action=(?P<action>\\S+)\\s+bytes=(?P<bytes>\\d+)",
+  "field_mappings": {
+    "src_ip": "client_ip",
+    "dst_ip": "dst_ip",
+    "proto": "proto",
+    "action": "action"
+  }
+}
