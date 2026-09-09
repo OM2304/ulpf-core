@@ -4,7 +4,8 @@ import { Activity, Boxes, ChevronRight, Database, FileCode2, Menu, Radio, Server
 import { API_BASE } from '../services/api'
 
 const navItems = [
-  { to: '/', label: 'Overview', icon: Activity, end: true },
+  { to: '/', label: 'Telemetry', icon: Activity, end: true },
+  { to: '/overview', label: 'Pipeline Overview', icon: Server },
   { to: '/ingest', label: 'Live Ingest', icon: Radio },
   { to: '/spool', label: 'Durable Spool', icon: Database },
   { to: '/registry', label: 'Parser Registry', icon: FileCode2 },

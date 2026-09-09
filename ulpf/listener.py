@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import sqlite3
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional, Tuple
@@ -25,6 +26,10 @@ logger = logging.getLogger(__name__)
 class IngestRequest(BaseModel):
     payloads: List[str] = Field(min_length=1)
     transport: Optional[str] = "http_api"
+
+
+class PathIngestRequest(BaseModel):
+    path: str
 
 
 class IngestResponse(BaseModel):
@@ -99,7 +104,12 @@ async def lifespan(app: FastAPI):
     app.state.engine = engine
     app.state.worker = worker
 
-    udp_transport = await start_udp_syslog_server(spool, host="0.0.0.0", port=5140)
+    try:
+        udp_transport = await start_udp_syslog_server(spool, host="0.0.0.0", port=5140)
+    except OSError as exc:
+        logger.warning("UDP syslog server could not bind to port 5140: %s", exc)
+        udp_transport = None
+
     worker_task = asyncio.create_task(worker.run(), name="ulpf-agent-worker")
     app.state.udp_transport = udp_transport
     app.state.worker_task = worker_task
@@ -110,7 +120,8 @@ async def lifespan(app: FastAPI):
         worker_task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await worker_task
-        udp_transport.close()
+        if udp_transport is not None:
+            udp_transport.close()
 
 
 app = FastAPI(title="ULPF Agentic Daemon", version="1.0.0", lifespan=lifespan)
@@ -167,6 +178,31 @@ async def ingest_logs(payload: IngestRequest) -> IngestResponse:
         queued_for_ai=queued_for_ai,
         event_ids=event_ids,
     )
+
+
+@app.post("/api/v1/ingest/path", status_code=201)
+async def ingest_file_path(req: PathIngestRequest):
+    spool, storage, _, engine, _ = _components(app)
+    target_path = req.path.strip('"').strip("'")
+    if not os.path.exists(target_path):
+        raise HTTPException(status_code=404, detail=f"Log file not found at path: {target_path}")
+
+    ingested_count = 0
+    with open(target_path, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            payload = line.strip()
+            if not payload:
+                continue
+            envelope = EventEnvelope(raw_payload=payload, source_transport="web_upload")
+            success, parsed = engine.parse_and_normalize(envelope)
+            if success and parsed.status == EventStatus.COMMITTED:
+                storage.commit_event(parsed)
+                spool.spool(parsed)
+            else:
+                parsed.status = EventStatus.PENDING_AI
+                spool.spool(parsed)
+            ingested_count += 1
+    return {"status": "success", "total_ingested": ingested_count, "path": target_path}
 
 
 def _query_spool_counts(db_path: str) -> Dict[str, int]:

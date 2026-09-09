@@ -37,6 +37,10 @@ export const api = {
     method: 'POST',
     body: JSON.stringify({ payloads, transport }),
   }),
+  ingestPath: (path) => request('/api/v1/ingest/path', {
+    method: 'POST',
+    body: JSON.stringify({ path }),
+  }),
   triage: () => request('/api/v1/triage/trigger', { method: 'POST' }),
 }
 

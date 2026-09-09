@@ -102,3 +102,25 @@ async def test_udp_syslog_ingestion():
     for f in [spool_db, storage_db]:
         if os.path.exists(f):
             os.remove(f)
+
+
+def test_path_ingest_endpoint(tmp_path):
+    """Test HTTP POST /api/v1/ingest/path with temporary log file."""
+    from ulpf.listener import app
+    test_log_file = tmp_path / "test_ingest.log"
+    test_log_file.write_text(
+        "CEF:0|Palo Alto Networks|PAN-OS|10.0|TRAFFIC|allow|1|src=10.0.0.5 dst=8.8.8.8 spt=53 dpt=53 proto=udp act=allow\n"
+        "sshd[1234]: Failed password for invalid user admin from 192.168.1.100 port 2222 ssh2\n"
+    )
+
+    with TestClient(app) as client:
+        # Test valid path
+        res = client.post("/api/v1/ingest/path", json={"path": str(test_log_file)})
+        assert res.status_code == 201
+        data = res.json()
+        assert data["status"] == "success"
+        assert data["total_ingested"] == 2
+
+        # Test non-existent path
+        res_404 = client.post("/api/v1/ingest/path", json={"path": "C:\\non_existent_file_path.log"})
+        assert res_404.status_code == 404
