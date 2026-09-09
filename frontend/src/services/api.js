@@ -41,6 +41,7 @@ export const api = {
     method: 'POST',
     body: JSON.stringify({ path }),
   }),
+  getConsoleLogs: () => request('/api/v1/console/logs'),
   triage: () => request('/api/v1/triage/trigger', { method: 'POST' }),
 }
 

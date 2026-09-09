@@ -33,6 +33,7 @@ export default function TelemetryDashboard() {
   const [metrics, setMetrics] = useState(null)
   const [prevTotalSpooled, setPrevTotalSpooled] = useState(0)
   const [loadingMetrics, setLoadingMetrics] = useState(true)
+  const [isRefreshing, setIsRefreshing] = useState(false)
   const [metricsError, setMetricsError] = useState(null)
 
   // --- Chart Historical Data State ---
@@ -58,9 +59,12 @@ export default function TelemetryDashboard() {
       text: 'WAL Spool SQLite engine active. Telemetry polling started (2.5s interval).',
     },
   ])
+  const [showVerboseLogs, setShowVerboseLogs] = useState(false)
+  const [backendLogs, setBackendLogs] = useState([])
   const [isTerminalExpanded, setIsTerminalExpanded] = useState(false)
   const [isTerminalFullscreen, setIsTerminalFullscreen] = useState(false)
-  const terminalEndRef = useRef(null)
+  const terminalContainerRef = useRef(null)
+  const terminalWasAtBottomRef = useRef(true)
 
   // --- Event Stream Table State ---
   const [events, setEvents] = useState([])
@@ -68,10 +72,15 @@ export default function TelemetryDashboard() {
   const [statusFilter, setStatusFilter] = useState('ALL')
   const [searchTerm, setSearchTerm] = useState('')
 
-  // --- Auto-scroll Terminal to bottom ---
+  // --- Auto-scroll Terminal internally without window hijacking ---
   useEffect(() => {
-    terminalEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [terminalLogs])
+    const container = terminalContainerRef.current
+    if (!container) return
+
+    if (terminalWasAtBottomRef.current) {
+      container.scrollTop = container.scrollHeight
+    }
+  }, [terminalLogs, backendLogs, showVerboseLogs])
 
   // --- Helper to append terminal logs ---
   const logToTerminal = (type, text, payload = null) => {
@@ -87,7 +96,7 @@ export default function TelemetryDashboard() {
     ])
   }
 
-  // --- Poll Metrics & Events ---
+  // --- Poll Metrics, Events & Console Logs ---
   const fetchMetricsAndEvents = async () => {
     try {
       const mData = await api.metrics()
@@ -124,6 +133,15 @@ export default function TelemetryDashboard() {
     } catch (err) {
       // Non-blocking error for table stream
     }
+
+    try {
+      const cData = await api.getConsoleLogs()
+      if (cData && Array.isArray(cData.logs)) {
+        setBackendLogs(cData.logs)
+      }
+    } catch (err) {
+      // Non-blocking error for console logs stream
+    }
   }
 
   useEffect(() => {
@@ -146,6 +164,7 @@ export default function TelemetryDashboard() {
       const res = await api.ingestPath(target)
       setIngestStatus({ type: 'success', text: `Successfully ingested ${res.total_ingested} logs from ${res.path}` })
       logToTerminal('success', `[INGEST_SUCCESS] Total Ingested: ${res.total_ingested} lines from file`, res)
+      setInputPath('') // Clear input field upon successful ingestion
       // Immediately refresh telemetry
       fetchMetricsAndEvents()
     } catch (err) {
@@ -159,9 +178,15 @@ export default function TelemetryDashboard() {
 
   // --- Manual Refresh Handler ---
   const handleManualRefresh = async () => {
-    setLoadingMetrics(true)
+    setIsRefreshing(true)
     logToTerminal('info', '[REFRESH] Manually triggering telemetry metrics & event fetch...')
-    await fetchMetricsAndEvents()
+    try {
+      await fetchMetricsAndEvents()
+    } catch (err) {
+      logToTerminal('error', `[REFRESH_ERROR] ${err.message || 'Refresh failed'}`)
+    } finally {
+      setIsRefreshing(false)
+    }
   }
 
   // --- Quick Path Select Handler ---
@@ -215,10 +240,10 @@ export default function TelemetryDashboard() {
         <div className="flex items-center gap-3">
           <button
             onClick={handleManualRefresh}
-            disabled={loadingMetrics}
-            className="flex items-center gap-2 px-3 py-2 text-xs font-semibold text-gray-300 bg-gray-900 border border-gray-800 rounded hover:border-cyan-400 hover:text-cyan-400 transition-all cursor-pointer"
+            disabled={isRefreshing || loadingMetrics}
+            className="flex items-center gap-2 px-3 py-2 text-xs font-semibold text-gray-300 bg-gray-900 border border-gray-800 rounded hover:border-cyan-400 hover:text-cyan-400 transition-all cursor-pointer disabled:opacity-50"
           >
-            <RefreshCw size={14} className={loadingMetrics ? 'animate-spin' : ''} />
+            <RefreshCw size={14} className={isRefreshing ? 'animate-spin' : ''} />
             <span>Refresh Now</span>
           </button>
         </div>
@@ -488,6 +513,13 @@ export default function TelemetryDashboard() {
 
           <div className="flex items-center gap-2">
             <button
+              type="button"
+              onClick={() => setShowVerboseLogs((prev) => !prev)}
+              className="text-cyan-400 hover:underline font-bold text-xs mr-2 cursor-pointer"
+            >
+              {showVerboseLogs ? 'Hide Backend Logs' : 'Show Backend Logs'}
+            </button>
+            <button
               onClick={() => setIsTerminalExpanded(!isTerminalExpanded)}
               className="p-1 text-gray-400 hover:text-cyan-400 hover:bg-gray-800 rounded transition-colors"
               title={isTerminalExpanded ? 'Collapse Height' : 'Expand Height'}
@@ -502,7 +534,10 @@ export default function TelemetryDashboard() {
               {isTerminalFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
             </button>
             <button
-              onClick={() => setTerminalLogs([])}
+              onClick={() => {
+                if (showVerboseLogs) setBackendLogs([])
+                else setTerminalLogs([])
+              }}
               className="p-1 text-gray-400 hover:text-rose-400 hover:bg-gray-800 rounded transition-colors"
               title="Clear Terminal Output"
             >
@@ -513,6 +548,12 @@ export default function TelemetryDashboard() {
 
         {/* Terminal Body */}
         <div
+          ref={terminalContainerRef}
+          onScroll={(event) => {
+            const container = event.currentTarget
+            terminalWasAtBottomRef.current =
+              container.scrollHeight - container.scrollTop - container.clientHeight < 80
+          }}
           className={`p-4 font-mono text-xs overflow-y-auto space-y-1.5 bg-[#080c10] text-gray-300 ${
             isTerminalFullscreen
               ? 'flex-1'
@@ -521,33 +562,47 @@ export default function TelemetryDashboard() {
               : 'h-52'
           }`}
         >
-          {terminalLogs.map((log) => (
-            <div key={log.id} className="flex items-start gap-2 leading-relaxed hover:bg-gray-900/50 px-1 py-0.5 rounded">
-              <span className="text-gray-600 shrink-0 text-[10px] select-none">[{log.time}]</span>
-              {log.type === 'error' && (
-                <span className="px-1.5 py-0.2 bg-rose-950 text-rose-400 border border-rose-800 rounded text-[10px] shrink-0">
-                  ERROR
-                </span>
-              )}
-              {log.type === 'success' && (
-                <span className="px-1.5 py-0.2 bg-emerald-950 text-emerald-400 border border-emerald-800 rounded text-[10px] shrink-0">
-                  SUCCESS
-                </span>
-              )}
-              {log.type === 'info' && (
-                <span className="px-1.5 py-0.2 bg-cyan-950 text-cyan-400 border border-cyan-800 rounded text-[10px] shrink-0">
-                  INFO
-                </span>
-              )}
-              {log.type === 'system' && (
-                <span className="px-1.5 py-0.2 bg-gray-800 text-gray-400 rounded text-[10px] shrink-0">
-                  SYSTEM
-                </span>
-              )}
-              <span className="text-gray-200 break-all">{log.text}</span>
-            </div>
-          ))}
-          <div ref={terminalEndRef} />
+          {showVerboseLogs ? (
+            backendLogs.length > 0 ? (
+              backendLogs.map((logStr, idx) => (
+                <div key={idx} className="flex items-start gap-2 leading-relaxed hover:bg-gray-900/50 px-1 py-0.5 rounded">
+                  <span className="text-cyan-400 font-bold shrink-0 text-[10px] select-none">[BACKEND]</span>
+                  <span className="text-gray-200 break-all">{logStr}</span>
+                </div>
+              ))
+            ) : (
+              <div className="text-gray-500 italic py-2">
+                No backend AI processing logs recorded yet. Trigger AI triage to generate logs.
+              </div>
+            )
+          ) : (
+            terminalLogs.map((log) => (
+              <div key={log.id} className="flex items-start gap-2 leading-relaxed hover:bg-gray-900/50 px-1 py-0.5 rounded">
+                <span className="text-gray-600 shrink-0 text-[10px] select-none">[{log.time}]</span>
+                {log.type === 'error' && (
+                  <span className="px-1.5 py-0.2 bg-rose-950 text-rose-400 border border-rose-800 rounded text-[10px] shrink-0">
+                    ERROR
+                  </span>
+                )}
+                {log.type === 'success' && (
+                  <span className="px-1.5 py-0.2 bg-emerald-950 text-emerald-400 border border-emerald-800 rounded text-[10px] shrink-0">
+                    SUCCESS
+                  </span>
+                )}
+                {log.type === 'info' && (
+                  <span className="px-1.5 py-0.2 bg-cyan-950 text-cyan-400 border border-cyan-800 rounded text-[10px] shrink-0">
+                    INFO
+                  </span>
+                )}
+                {log.type === 'system' && (
+                  <span className="px-1.5 py-0.2 bg-gray-800 text-gray-400 rounded text-[10px] shrink-0">
+                    SYSTEM
+                  </span>
+                )}
+                <span className="text-gray-200 break-all">{log.text}</span>
+              </div>
+            ))
+          )}
         </div>
       </div>
 

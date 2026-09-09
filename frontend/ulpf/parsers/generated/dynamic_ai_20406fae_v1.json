@@ -1,0 +1,11 @@
+{
+  "parser_id": "dynamic_ai_20406fae_v1",
+  "parser_version": "1.0.0",
+  "description": "AI-synthesized dynamic parser for AUTHENTICATION (validated via RAG reflexion)",
+  "regex_pattern": "(?i).*?(?P<action>imap-login).*?(?P<status>Login).*?(?P<user>\\S+)",
+  "field_mappings": {
+    "user": "user",
+    "action": "action",
+    "status": "status"
+  }
+}
