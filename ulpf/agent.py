@@ -72,40 +72,50 @@ Respond with ONLY the category name."""
             pass
         return "NETWORK"
 
-    def retrieve_rag_context(self, sample_log: str) -> dict:
+    def retrieve_rag_context(self, sample_log: str, top_k: int = 2) -> List[dict]:
+        """Fetch the top K structurally similar parsers for Dynamic Few-Shot."""
         if not self.rag_collection:
-            return {"category": "NETWORK", "regex": "", "mappings": "", "log": ""}
+            return []
             
         results = self.rag_collection.query(
             query_texts=[sample_log],
-            n_results=1
+            n_results=top_k
         )
         
+        contexts = []
         if results['metadatas'] and results['metadatas'][0]:
-            meta = results['metadatas'][0][0]
-            return {
-                "category": meta["category"],
-                "regex": meta["regex"],
-                "mappings": meta["mappings"],
-                "log": results['documents'][0][0]
-            }
-        return {"category": "NETWORK", "regex": "", "mappings": "", "log": ""}
+            for i in range(len(results['metadatas'][0])):
+                meta = results['metadatas'][0][i]
+                contexts.append({
+                    "category": meta.get("category", "NETWORK"),
+                    "regex": meta.get("regex", ""),
+                    "mappings": meta.get("mappings", ""),
+                    "log": results['documents'][0][i] if results['documents'] else ""
+                })
+        return contexts
 
-    def build_prompt(self, sample_logs: List[str], rag_context: dict) -> str:
+    def build_prompt(self, sample_logs: List[str], rag_contexts: List[dict], category: str) -> str:
         formatted_samples = "\n".join([f"- {s}" for s in sample_logs])
-        category = rag_context.get("category", "NETWORK")
         
+        # Define base schema and static baseline example
         if category == "AUTHENTICATION":
             fields_list = "1. action (e.g., session, login, sudo, logout)\n2. status (e.g., opened, closed, failed, success)\n3. user (the username)"
             json_schema = '{\n  "regex_pattern": "...",\n  "field_mappings": {\n    "user": "user",\n    "action": "action",\n    "status": "status"\n  }\n}'
+            static_example = "--- STATIC BASELINE EXAMPLE ---\nTARGET LOG: May 14 12:30:00 server sshd[123]: Failed password for root from 192.168.1.10\nREGEX: (?i).*?(?P<action>password).*?(?P<status>Failed).*?(?:for)\\s+(?P<user>\\S+)\n"
         elif category == "WEB":
             fields_list = "1. src_ip (client IP)\n2. method (GET/POST/PUT)\n3. url (request path)\n4. status (HTTP status code)"
             json_schema = '{\n  "regex_pattern": "...",\n  "field_mappings": {\n    "src_ip": "src_ip",\n    "method": "method",\n    "url": "url",\n    "status": "status"\n  }\n}'
+            static_example = "--- STATIC BASELINE EXAMPLE ---\nTARGET LOG: 192.168.1.5 - - [10/Oct/2000] \"GET /index.html HTTP/1.0\" 200\nREGEX: (?i)^(?P<src_ip>\\d+\\.\\d+\\.\\d+\\.\\d+).*?(?P<method>GET|POST|PUT|DELETE)\\s+(?P<url>\\S+)\\s+HTTP.*?\"?\\s+(?P<status>\\d{3})\n"
         else: # NETWORK
             fields_list = "1. src_ip (Source IP)\n2. dst_ip (Destination IP)\n3. proto (Protocol)\n4. action (ALLOW/DENY/DROP/ACCEPT)"
             json_schema = '{\n  "regex_pattern": "...",\n  "field_mappings": {\n    "src_ip": "src_ip",\n    "dst_ip": "dst_ip",\n    "proto": "proto",\n    "action": "action"\n  }\n}'
+            static_example = "--- STATIC BASELINE EXAMPLE ---\nTARGET LOG: SRC=10.0.0.1 DST=192.168.1.100 PROTO=TCP ACTION=DROP\nREGEX: (?i).*?SRC=(?P<src_ip>\\d+\\.\\d+\\.\\d+\\.\\d+).*?DST=(?P<dst_ip>\\d+\\.\\d+\\.\\d+\\.\\d+).*?PROTO=(?P<proto>\\S+).*?(?P<action>DROP|ACCEPT|REJECT|DENY|BLOCK|ALLOW)\n"
 
-        safe_regex = rag_context['regex'].replace("\\", "\\\\") if rag_context.get('regex') else ""
+        # Build dynamic examples from ChromaDB
+        dynamic_examples = ""
+        for idx, ctx in enumerate(rag_contexts, 1):
+            safe_regex = ctx['regex'].replace("\\", "\\\\") if ctx.get('regex') else ""
+            dynamic_examples += f"--- DYNAMIC RAG EXAMPLE {idx} ---\nTARGET LOG: {ctx['log']}\nREGEX: {safe_regex}\n\n"
 
         return f"""You are an elite cybersecurity log parsing engineer. Analyze these TARGET LOGS:
 {formatted_samples}
@@ -113,17 +123,15 @@ Respond with ONLY the category name."""
 Generate a Python regular expression with NAMED capture groups that extracts:
 {fields_list}
 
---- REFERENCE TEMPLATE ---
-Log: {rag_context['log']}
-Regex: {safe_regex}
---------------------------
-
+{static_example}
+{dynamic_examples}
 CRITICAL INSTRUCTIONS:
-1. ADAPT TO THE TARGET: The reference template is just an example! Look closely at the TARGET LOGS. Change your regex to match the exact spacing, brackets, and punctuation in the Target Logs.
-2. NO HALLUCINATION: Do NOT blindly inject keys into the regex if those literal words do not exist in the log text. Use .*? to skip noise.
-3. UNIQUE GROUP NAMES: Never reuse the same named group (e.g., do not write (?P<user>...) more than once). Every named group must have a unique identifier.
-4. CASE-INSENSITIVITY: Start your regex with the (?i) flag.
-5. ESCAPING: Double-escape backslashes for valid JSON (use \\\\d, \\\\s, \\\\S).
+1. ADAPT TO THE TARGET: The templates above are just examples! Look closely at the exact spacing, brackets, and punctuation in the TARGET LOGS. Change your regex to match them.
+2. PUNCTUATION IS KEY: Extract values based on surrounding punctuation (like brackets [], parentheses (), or equal signs =).
+3. NO HALLUCINATION: NEVER inject literal words like 'user ' or 'src=' unless they explicitly exist in the TARGET LOGS. Use .*? to skip noise.
+4. UNIQUE GROUP NAMES: Never reuse the same named group (e.g., do not write (?P<user>...) more than once). Every named group must have a unique identifier.
+5. CASE-INSENSITIVITY: Start your regex with the (?i) flag.
+6. ESCAPING: Double-escape backslashes for valid JSON (use \\\\d, \\\\s, \\\\S).
 
 Return ONLY a valid JSON object matching this schema exactly:
 {json_schema}
@@ -134,10 +142,10 @@ Return ONLY a valid JSON object matching this schema exactly:
         sample_logs: List[str],
         previous_pattern: str,
         error_reason: str,
-        rag_context: dict
+        rag_contexts: List[dict],
+        category: str
     ) -> str:
         formatted_samples = "\n".join([f"- {s}" for s in sample_logs])
-        category = rag_context.get("category", "NETWORK")
         
         if category == "AUTHENTICATION":
             json_schema = '{\n  "regex_pattern": "...",\n  "field_mappings": {\n    "user": "user",\n    "action": "action",\n    "status": "status"\n  }\n}'
@@ -146,7 +154,10 @@ Return ONLY a valid JSON object matching this schema exactly:
         else:
             json_schema = '{\n  "regex_pattern": "...",\n  "field_mappings": {\n    "src_ip": "src_ip",\n    "dst_ip": "dst_ip",\n    "proto": "proto",\n    "action": "action"\n  }\n}'
 
-        safe_regex = rag_context['regex'].replace("\\", "\\\\") if rag_context.get('regex') else ""
+        reference = ""
+        if rag_contexts:
+            safe_regex = rag_contexts[0]['regex'].replace("\\", "\\\\") if rag_contexts[0].get('regex') else ""
+            reference = f"--- CLOSEST KNOWN PATTERN ---\nIf stuck, look at this structure:\n{safe_regex}\n--------------------------\n"
 
         return f"""Your previous regular expression failed sandbox validation.
 
@@ -159,10 +170,7 @@ Previous Attempt:
 Validation Error Reason:
 {error_reason}
 
---- REFERENCE TEMPLATE ---
-If stuck, copy this exact structure and adjust the brackets/spacing:
-{safe_regex}
---------------------------
+{reference}
 
 Reflect on why the previous pattern failed. 
 CRITICAL RULE: You likely hardcoded literal text or duplicated a named group (such as reusing (?P<user>...)). Ensure every named group is unique and avoid hardcoded literal keys that do not exist in the logs.
@@ -233,10 +241,10 @@ Return ONLY a valid JSON object with this exact structure:
         category = self.classify_cluster(sample_logs)
         rprint(f"    [magenta]⚡ RAG Vector Match Found:[/magenta] [bold]{category}[/bold] schema applied.")
         
-        rag_context = self.retrieve_rag_context(sample_logs[0])
-        rag_context["category"] = category 
+        # Now fetches a list of dicts instead of a single dict
+        rag_contexts = self.retrieve_rag_context(sample_logs[0], top_k=2)
         
-        current_prompt = self.build_prompt(sample_logs, rag_context)
+        current_prompt = self.build_prompt(sample_logs, rag_contexts, category)
         last_failed_pattern = ""
 
         for attempt in range(1, max_attempts + 1):
@@ -248,7 +256,7 @@ Return ONLY a valid JSON object with this exact structure:
                 last_failed_pattern = raw_response[:80]
                 error_msg = "Output was not valid JSON format or failed regex escaping rules."
                 rprint(f"    [yellow]⚠ Attempt {attempt} JSON decode error:[/yellow] Triggering self-reflection retry...")
-                current_prompt = self.build_reflection_prompt(sample_logs, last_failed_pattern, error_msg, rag_context)
+                current_prompt = self.build_reflection_prompt(sample_logs, last_failed_pattern, error_msg, rag_contexts, category)
                 continue
 
             regex_pattern = data.get("regex_pattern", "")
@@ -261,7 +269,7 @@ Return ONLY a valid JSON object with this exact structure:
                 last_failed_pattern = regex_pattern
                 error_msg = f"Regex compilation error: {compile_err}"
                 rprint(f"    [yellow]⚠ Reflexion Loop Triggered:[/yellow] {error_msg}")
-                current_prompt = self.build_reflection_prompt(sample_logs, last_failed_pattern, error_msg, rag_context)
+                current_prompt = self.build_reflection_prompt(sample_logs, last_failed_pattern, error_msg, rag_contexts, category)
                 continue
 
             missing_groups = [grp for grp in field_mappings.values() if grp and grp not in compiled.groupindex]
@@ -272,7 +280,7 @@ Return ONLY a valid JSON object with this exact structure:
                     f"You MUST format groups as (?P<group_name>pattern) instead of unnamed (pattern)."
                 )
                 rprint(f"    [yellow]⚠ Reflexion Loop Triggered:[/yellow] {error_msg}")
-                current_prompt = self.build_reflection_prompt(sample_logs, last_failed_pattern, error_msg, rag_context)
+                current_prompt = self.build_reflection_prompt(sample_logs, last_failed_pattern, error_msg, rag_contexts, category)
                 continue
 
             is_valid, reason, coverage = SandboxValidator.validate_pattern(
@@ -316,7 +324,7 @@ Return ONLY a valid JSON object with this exact structure:
             error_reason = semantic_error if semantic_error else reason
             error_msg = f"{error_reason} (Coverage: {coverage * 100:.1f}%, Field Extraction Valid: {extraction_valid})"
             rprint(f"    [yellow]⚠ Reflexion Loop Triggered:[/yellow] {error_msg}")
-            current_prompt = self.build_reflection_prompt(sample_logs, last_failed_pattern, error_msg, rag_context)
+            current_prompt = self.build_reflection_prompt(sample_logs, last_failed_pattern, error_msg, rag_contexts, category)
 
         return None
 
