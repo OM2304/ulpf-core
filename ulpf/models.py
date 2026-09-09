@@ -2,7 +2,7 @@ import hashlib
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 from pydantic import BaseModel, Field
 
 
@@ -19,15 +19,22 @@ class EventStatus(str, Enum):
 
 
 class OCSFNetworkActivity(BaseModel):
-    """OCSF Class UID 4001: Network Activity representation."""
+    """OCSF representation supporting Network (4001), HTTP (4002), and Authentication (3002)."""
     class_uid: int = 4001
+    class_name: str = "Network Activity"
     category_uid: int = 4
+    category_name: str = "Network Activity"
     severity_id: int = 1
     action: str = "Unknown"
     disposition: Optional[str] = None
+    status_detail: Optional[str] = None
     src_endpoint: Dict[str, Any] = Field(default_factory=dict)
     dst_endpoint: Dict[str, Any] = Field(default_factory=dict)
     connection_info: Dict[str, Any] = Field(default_factory=dict)
+    user: Dict[str, Any] = Field(default_factory=dict)
+    http_request: Dict[str, Any] = Field(default_factory=dict)
+    http_response: Dict[str, Any] = Field(default_factory=dict)
+    raw_data: Optional[str] = None
 
 
 class EventEnvelope(BaseModel):
@@ -40,7 +47,7 @@ class EventEnvelope(BaseModel):
     status: EventStatus = EventStatus.RECEIVED
     parser_id: Optional[str] = None
     parser_version: Optional[str] = None
-    ocsf_event: Optional[OCSFNetworkActivity] = None
+    ocsf_event: Optional[Union[OCSFNetworkActivity, Dict[str, Any]]] = None
     
     # Poison-pill tracking & dead-letter telemetry
     retry_count: int = Field(default=0)

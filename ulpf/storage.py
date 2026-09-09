@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 from ulpf.models import EventEnvelope, EventStatus, OCSFNetworkActivity
 
 
@@ -12,8 +12,9 @@ class NormalizedStorage:
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        conn = sqlite3.connect(self.db_path, check_same_thread=False, timeout=30.0)
         conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA busy_timeout=5000;")
         conn.execute("PRAGMA synchronous=NORMAL;")
         return conn
 
@@ -47,7 +48,25 @@ class NormalizedStorage:
             return False
 
         ocsf = envelope.ocsf_event
-        ocsf_dict = ocsf.model_dump()
+        if hasattr(ocsf, "model_dump"):
+            ocsf_dict = ocsf.model_dump()
+        elif hasattr(ocsf, "dict"):
+            ocsf_dict = ocsf.dict()
+        elif isinstance(ocsf, dict):
+            ocsf_dict = ocsf
+        else:
+            ocsf_dict = {}
+
+        def field(name: str, default: Any = None) -> Any:
+            if isinstance(ocsf, Mapping):
+                return ocsf.get(name, default)
+            return getattr(ocsf, name, default)
+
+        def endpoint_value(endpoint_name: str, value_name: str) -> Any:
+            endpoint = field(endpoint_name, {})
+            if isinstance(endpoint, Mapping):
+                return endpoint.get(value_name)
+            return getattr(endpoint, value_name, None)
 
         with self._get_connection() as conn:
             conn.execute(
@@ -67,13 +86,13 @@ class NormalizedStorage:
                     envelope.raw_sha256,
                     envelope.parser_id or "unknown",
                     envelope.parser_version or "1.0.0",
-                    ocsf.action,
-                    ocsf.disposition,
-                    ocsf.src_endpoint.get("ip"),
-                    ocsf.src_endpoint.get("port"),
-                    ocsf.dst_endpoint.get("ip"),
-                    ocsf.dst_endpoint.get("port"),
-                    ocsf.connection_info.get("protocol_name"),
+                    field("action", "Unknown"),
+                    field("disposition"),
+                    endpoint_value("src_endpoint", "ip"),
+                    endpoint_value("src_endpoint", "port"),
+                    endpoint_value("dst_endpoint", "ip"),
+                    endpoint_value("dst_endpoint", "port"),
+                    endpoint_value("connection_info", "protocol_name"),
                     json.dumps(ocsf_dict),
                 ),
             )

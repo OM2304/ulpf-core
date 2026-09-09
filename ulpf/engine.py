@@ -1,7 +1,14 @@
 import re
-from typing import Optional, Tuple
+from typing import Any, Mapping, Optional, Tuple
 from ulpf.models import EventEnvelope, EventStatus, OCSFNetworkActivity
 from ulpf.registry import DynamicParserRegistry
+
+
+def _ocsf_value(ocsf_event: Any, field_name: str, default: Any = None) -> Any:
+    """Read an OCSF field from either a Pydantic model or a mapping."""
+    if isinstance(ocsf_event, Mapping):
+        return ocsf_event.get(field_name, default)
+    return getattr(ocsf_event, field_name, default)
 
 
 class DeterministicEngine:
@@ -115,7 +122,8 @@ class DeterministicEngine:
 
         # Check 4: Dynamic Hot-Loaded Parsers in Registry
         success, dyn_envelope = self.registry.apply_parsers(envelope)
-        if success:
+        dyn_ocsf_event = getattr(dyn_envelope, "ocsf_event", None)
+        if success and _ocsf_value(dyn_ocsf_event, "action") is not None:
             return True, dyn_envelope
 
         # No parser matched -> Route to AI Agent Queue

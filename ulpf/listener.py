@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import json
+import logging
 import sqlite3
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional, Tuple
@@ -16,6 +17,9 @@ from ulpf.models import EventEnvelope, EventStatus
 from ulpf.registry import DynamicParserRegistry
 from ulpf.spool import DurableSpool
 from ulpf.storage import NormalizedStorage
+
+
+logger = logging.getLogger(__name__)
 
 
 class IngestRequest(BaseModel):
@@ -155,6 +159,7 @@ async def ingest_logs(payload: IngestRequest) -> IngestResponse:
                 queued_for_ai += 1
             event_ids.append(envelope.event_id)
     except Exception as exc:
+        logger.exception("Ingestion failed while processing %d payload(s)", len(payload.payloads))
         raise HTTPException(status_code=500, detail=f"ingestion failed: {exc}") from exc
     return IngestResponse(
         ingested=len(event_ids),

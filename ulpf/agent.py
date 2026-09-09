@@ -1,8 +1,12 @@
 import ast
 import json
+import os
 import re
 from typing import Callable, Dict, List, Optional, Tuple
 from rich import print as rprint
+import chromadb
+from chromadb.utils import embedding_functions
+
 from ulpf.clustering import cluster_unrecognized_events
 from ulpf.models import EventEnvelope, EventStatus
 from ulpf.registry import DynamicParserRegistry, ParserDefinition, SandboxValidator
@@ -10,12 +14,7 @@ from ulpf.spool import DurableSpool
 
 
 class ParserSynthesisAgent:
-    """Offline Agentic AI control plane for synthesizing, reflecting, and validating dynamic parsers.
-    
-    Implements an air-gapped Reflexion loop that prompts a local LLM via Ollama,
-    validates candidate regexes in a sandbox environment, and feeds runtime errors
-    back into the model for autonomous self-correction.
-    """
+    """Offline Agentic AI control plane augmented with local RAG for precision parser synthesis."""
 
     def __init__(
         self,
@@ -28,9 +27,16 @@ class ParserSynthesisAgent:
         self.spool = spool
         self.llm_caller = llm_caller or self._default_ollama_caller
         self.model_name = model_name
+        
+        db_path = os.path.join(os.getcwd(), "ulpf_chroma_db")
+        self.chroma_client = chromadb.PersistentClient(path=db_path)
+        self.emb_fn = embedding_functions.SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
+        try:
+            self.rag_collection = self.chroma_client.get_collection(name="log_parsers", embedding_function=self.emb_fn)
+        except Exception:
+            self.rag_collection = None
 
     def _default_ollama_caller(self, prompt: str) -> str:
-        """Execute local inference against Ollama."""
         try:
             import ollama
             response = ollama.generate(
@@ -42,52 +48,109 @@ class ParserSynthesisAgent:
         except Exception as e:
             raise RuntimeError(f"Local Ollama inference failed: {e}")
 
-    def build_prompt(self, sample_logs: List[str]) -> str:
-        """Construct structured prompt for deterministic regex and OCSF mapping generation."""
+    def classify_cluster(self, sample_logs: List[str]) -> str:
+        """Deterministic Hard-Routing takes priority to prevent 3B LLM Hallucinations."""
+        text = " ".join(sample_logs).lower()
+        
+        # 1. Hardcoded Rules (Unbreakable)
+        if "sudo" in text or "cron" in text or "login" in text or "pam_" in text or "imap" in text or "dovecot" in text: 
+            return "AUTHENTICATION"
+        if "get " in text or "post " in text or "http" in text: 
+            return "WEB"
+
+        # 2. Zero-Shot Fallback
+        formatted_samples = "\n".join([f"- {s}" for s in sample_logs[:3]])
+        prompt = f"""Categorize these logs into exactly ONE category (NETWORK, AUTHENTICATION, or WEB):
+{formatted_samples}
+Respond with ONLY the category name."""
+        try:
+            response = self.llm_caller(prompt).strip().upper()
+            if "AUTH" in response: return "AUTHENTICATION"
+            if "WEB" in response: return "WEB"
+            if "NET" in response: return "NETWORK"
+        except Exception:
+            pass
+        return "NETWORK"
+
+    def retrieve_rag_context(self, sample_log: str) -> dict:
+        if not self.rag_collection:
+            return {"category": "NETWORK", "regex": "", "mappings": "", "log": ""}
+            
+        results = self.rag_collection.query(
+            query_texts=[sample_log],
+            n_results=1
+        )
+        
+        if results['metadatas'] and results['metadatas'][0]:
+            meta = results['metadatas'][0][0]
+            return {
+                "category": meta["category"],
+                "regex": meta["regex"],
+                "mappings": meta["mappings"],
+                "log": results['documents'][0][0]
+            }
+        return {"category": "NETWORK", "regex": "", "mappings": "", "log": ""}
+
+    def build_prompt(self, sample_logs: List[str], rag_context: dict) -> str:
         formatted_samples = "\n".join([f"- {s}" for s in sample_logs])
-        return f"""You are a cybersecurity log parsing expert. Analyze these perimeter log samples:
+        category = rag_context.get("category", "NETWORK")
+        
+        if category == "AUTHENTICATION":
+            fields_list = "1. action (e.g., session, login, sudo, logout)\n2. status (e.g., opened, closed, failed, success)\n3. user (the username)"
+            json_schema = '{\n  "regex_pattern": "...",\n  "field_mappings": {\n    "user": "user",\n    "action": "action",\n    "status": "status"\n  }\n}'
+        elif category == "WEB":
+            fields_list = "1. src_ip (client IP)\n2. method (GET/POST/PUT)\n3. url (request path)\n4. status (HTTP status code)"
+            json_schema = '{\n  "regex_pattern": "...",\n  "field_mappings": {\n    "src_ip": "src_ip",\n    "method": "method",\n    "url": "url",\n    "status": "status"\n  }\n}'
+        else: # NETWORK
+            fields_list = "1. src_ip (Source IP)\n2. dst_ip (Destination IP)\n3. proto (Protocol)\n4. action (ALLOW/DENY/DROP/ACCEPT)"
+            json_schema = '{\n  "regex_pattern": "...",\n  "field_mappings": {\n    "src_ip": "src_ip",\n    "dst_ip": "dst_ip",\n    "proto": "proto",\n    "action": "action"\n  }\n}'
+
+        safe_regex = rag_context['regex'].replace("\\", "\\\\") if rag_context.get('regex') else ""
+
+        return f"""You are an elite cybersecurity log parsing engineer. Analyze these TARGET LOGS:
 {formatted_samples}
 
 Generate a Python regular expression with NAMED capture groups that extracts:
-1. Source IP address
-2. Destination IP address
-3. Protocol (TCP/UDP/ICMP/etc.)
-4. Action/State (ALLOW/DENY/REJECT/ACCEPT/DROP/etc.)
+{fields_list}
 
-MANDATORY RULES:
-- You MUST use Python named capture groups with (?P<group_name>pattern) syntax.
-- For key-value logs, extract ONLY the 4 required fields using non-greedy wildcards (.*?) between them.
-  Example pattern structure: src=(?P<src_ip>\\S+).*?dst=(?P<dst_ip>\\S+).*?proto=(?P<proto>\\S+).*?action=(?P<action>\\S+)
-- DO NOT attempt to rigidly match every unused intermediate field (like policy, bytes_sent, device) as omitting one breaks the match.
-- For IP addresses, use \\d+\\.\\d+\\.\\d+\\.\\d+ or \\S+ (do NOT use \\w+ because IP addresses contain dots).
-- For unquoted tokens, \\S+ matches cleanly up to whitespace.
-- For quoted values with spaces, use "[^"]*" or '[^']*'.
-- Double-escape backslashes for valid JSON (use \\\\d, \\\\s, \\\\S).
-- Return ONLY a valid JSON object matching this schema:
+--- REFERENCE TEMPLATE ---
+Log: {rag_context['log']}
+Regex: {safe_regex}
+--------------------------
 
-{{
-  "regex_pattern": "<your_regex_with_named_groups>",
-  "field_mappings": {{
-    "src_ip": "<group_name_for_src_ip>",
-    "dst_ip": "<group_name_for_dst_ip>",
-    "proto": "<group_name_for_protocol>",
-    "action": "<group_name_for_action>"
-  }}
-}}
-Do not include any explanation or Markdown outside the JSON.
+CRITICAL INSTRUCTIONS:
+1. ADAPT TO THE TARGET: The reference template is just an example! Look closely at the TARGET LOGS. Change your regex to match the exact spacing, brackets, and punctuation in the Target Logs.
+2. NO HALLUCINATION: Do NOT blindly inject keys into the regex if those literal words do not exist in the log text. Use .*? to skip noise.
+3. UNIQUE GROUP NAMES: Never reuse the same named group (e.g., do not write (?P<user>...) more than once). Every named group must have a unique identifier.
+4. CASE-INSENSITIVITY: Start your regex with the (?i) flag.
+5. ESCAPING: Double-escape backslashes for valid JSON (use \\\\d, \\\\s, \\\\S).
+
+Return ONLY a valid JSON object matching this schema exactly:
+{json_schema}
 """
 
     def build_reflection_prompt(
         self,
         sample_logs: List[str],
         previous_pattern: str,
-        error_reason: str
+        error_reason: str,
+        rag_context: dict
     ) -> str:
-        """Construct a reflection prompt containing execution failure feedback from SandboxValidator."""
         formatted_samples = "\n".join([f"- {s}" for s in sample_logs])
-        return f"""You are a cybersecurity log parsing expert. Your previous regular expression attempt failed sandbox validation.
+        category = rag_context.get("category", "NETWORK")
+        
+        if category == "AUTHENTICATION":
+            json_schema = '{\n  "regex_pattern": "...",\n  "field_mappings": {\n    "user": "user",\n    "action": "action",\n    "status": "status"\n  }\n}'
+        elif category == "WEB":
+            json_schema = '{\n  "regex_pattern": "...",\n  "field_mappings": {\n    "src_ip": "src_ip",\n    "method": "method",\n    "url": "url",\n    "status": "status"\n  }\n}'
+        else:
+            json_schema = '{\n  "regex_pattern": "...",\n  "field_mappings": {\n    "src_ip": "src_ip",\n    "dst_ip": "dst_ip",\n    "proto": "proto",\n    "action": "action"\n  }\n}'
 
-Perimeter Log Samples:
+        safe_regex = rag_context['regex'].replace("\\", "\\\\") if rag_context.get('regex') else ""
+
+        return f"""Your previous regular expression failed sandbox validation.
+
+Target Logs:
 {formatted_samples}
 
 Previous Attempt:
@@ -96,33 +159,20 @@ Previous Attempt:
 Validation Error Reason:
 {error_reason}
 
-Reflect on why the previous pattern failed. Fix the regular expression:
-1. You MUST use Python named capture groups (?P<name>pattern).
-2. Every field in field_mappings must match a (?P<name>...) group in regex_pattern.
-3. If your previous pattern missed fields in the middle (e.g. policy, bytes_sent), DO NOT try to match every field sequentially. Use non-greedy wildcards (.*?) between the key-value pairs you need to extract:
-   e.g. src=(?P<src_ip>\\S+).*?dst=(?P<dst_ip>\\S+).*?proto=(?P<proto>\\S+).*?action=(?P<action>\\S+)
-4. CRITICAL: IP addresses contain dots (e.g. 10.10.10.25). Never use \\w+ for IPs; use \\d+\\.\\d+\\.\\d+\\.\\d+ or \\S+.
-5. For unquoted values, use \\S+ to match cleanly up to the next whitespace.
-6. Double-escape backslashes in JSON (\\\\d, \\\\s, \\\\S).
+--- REFERENCE TEMPLATE ---
+If stuck, copy this exact structure and adjust the brackets/spacing:
+{safe_regex}
+--------------------------
+
+Reflect on why the previous pattern failed. 
+CRITICAL RULE: You likely hardcoded literal text or duplicated a named group (such as reusing (?P<user>...)). Ensure every named group is unique and avoid hardcoded literal keys that do not exist in the logs.
 
 Return ONLY a valid JSON object with this exact structure:
-{{
-  "regex_pattern": "...",
-  "field_mappings": {{
-    "src_ip": "<capture_group_name_for_src_ip>",
-    "dst_ip": "<capture_group_name_for_dst_ip>",
-    "proto": "<capture_group_name_for_protocol>",
-    "action": "<capture_group_name_for_action>"
-  }}
-}}
-Do not include any explanation or Markdown outside the JSON.
+{json_schema}
 """
 
     def _extract_json(self, raw_response: str) -> Optional[Dict]:
-        """Extract and sanitize JSON dictionary from raw LLM output across code fences and escape quirks."""
         cleaned = raw_response.strip()
-
-        # 1. Strip markdown code blocks
         if "```json" in cleaned:
             cleaned = cleaned.split("```json")[1].split("```")[0].strip()
         elif "```python" in cleaned:
@@ -130,25 +180,21 @@ Do not include any explanation or Markdown outside the JSON.
         elif "```" in cleaned:
             cleaned = cleaned.split("```")[1].split("```")[0].strip()
 
-        # 2. Extract outermost JSON braces
         start = cleaned.find("{")
         end = cleaned.rfind("}")
         snippet = cleaned[start:end + 1] if (start != -1 and end != -1 and end > start) else cleaned
 
-        # Strategy A: Direct standard json.loads
         try:
             return json.loads(snippet)
         except Exception:
             pass
 
-        # Strategy B: Sanitize invalid single backslashes common in regex output (\d, \s, \w, \.)
         try:
             sanitized = re.sub(r'\\(?![\\"/bfnrt]|u[0-9a-fA-F]{4})', r'\\\\', snippet)
             return json.loads(sanitized)
         except Exception:
             pass
 
-        # Strategy C: Python AST literal evaluation (handles single quotes and r"..." raw strings)
         try:
             res = ast.literal_eval(snippet)
             if isinstance(res, dict) and "regex_pattern" in res:
@@ -156,7 +202,6 @@ Do not include any explanation or Markdown outside the JSON.
         except Exception:
             pass
 
-        # Strategy D: Regex fallback extracting regex_pattern and field_mappings directly
         try:
             pattern_match = re.search(
                 r'["\']regex_pattern["\']\s*:\s*r?["\'](.*?)["\']\s*(?:,\s*["\']field_mappings["\']|\s*\})',
@@ -171,15 +216,9 @@ Do not include any explanation or Markdown outside the JSON.
                 if mapping_match:
                     for kv in re.finditer(r'["\']([^"\']+)["\']\s*:\s*["\']([^"\']+)["\']', mapping_match.group(1)):
                         mappings[kv.group(1)] = kv.group(2)
-                else:
-                    mappings = {k: k for k in ["src_ip", "dst_ip", "proto", "action"]}
-                return {
-                    "regex_pattern": raw_pattern,
-                    "field_mappings": mappings
-                }
+                return {"regex_pattern": raw_pattern, "field_mappings": mappings}
         except Exception:
             pass
-
         return None
 
     def synthesize_and_onboard(
@@ -188,11 +227,16 @@ Do not include any explanation or Markdown outside the JSON.
         sample_logs: List[str],
         max_attempts: int = 3
     ) -> Optional[ParserDefinition]:
-        """Synthesize regex, test in sandbox, reflect on failures, and register into active data plane."""
         if not sample_logs:
             return None
 
-        current_prompt = self.build_prompt(sample_logs)
+        category = self.classify_cluster(sample_logs)
+        rprint(f"    [magenta]⚡ RAG Vector Match Found:[/magenta] [bold]{category}[/bold] schema applied.")
+        
+        rag_context = self.retrieve_rag_context(sample_logs[0])
+        rag_context["category"] = category 
+        
+        current_prompt = self.build_prompt(sample_logs, rag_context)
         last_failed_pattern = ""
 
         for attempt in range(1, max_attempts + 1):
@@ -204,28 +248,23 @@ Do not include any explanation or Markdown outside the JSON.
                 last_failed_pattern = raw_response[:80]
                 error_msg = "Output was not valid JSON format or failed regex escaping rules."
                 rprint(f"    [yellow]⚠ Attempt {attempt} JSON decode error:[/yellow] Triggering self-reflection retry...")
-                current_prompt = self.build_reflection_prompt(sample_logs, last_failed_pattern, error_msg)
+                current_prompt = self.build_reflection_prompt(sample_logs, last_failed_pattern, error_msg, rag_context)
                 continue
 
             regex_pattern = data.get("regex_pattern", "")
             field_mappings = data.get("field_mappings", {})
             rprint(f"    [dim]Candidate Pattern:[/dim] [italic]{regex_pattern}[/italic]")
 
-            # 1. Check regex compilation
             try:
                 compiled = re.compile(regex_pattern)
             except re.error as compile_err:
                 last_failed_pattern = regex_pattern
                 error_msg = f"Regex compilation error: {compile_err}"
                 rprint(f"    [yellow]⚠ Reflexion Loop Triggered:[/yellow] {error_msg}")
-                current_prompt = self.build_reflection_prompt(sample_logs, last_failed_pattern, error_msg)
+                current_prompt = self.build_reflection_prompt(sample_logs, last_failed_pattern, error_msg, rag_context)
                 continue
 
-            # 2. Strict Named Group Check
-            missing_groups = [
-                grp for grp in field_mappings.values()
-                if grp not in compiled.groupindex
-            ]
+            missing_groups = [grp for grp in field_mappings.values() if grp and grp not in compiled.groupindex]
             if missing_groups or not compiled.groupindex:
                 last_failed_pattern = regex_pattern
                 error_msg = (
@@ -233,17 +272,15 @@ Do not include any explanation or Markdown outside the JSON.
                     f"You MUST format groups as (?P<group_name>pattern) instead of unnamed (pattern)."
                 )
                 rprint(f"    [yellow]⚠ Reflexion Loop Triggered:[/yellow] {error_msg}")
-                current_prompt = self.build_reflection_prompt(sample_logs, last_failed_pattern, error_msg)
+                current_prompt = self.build_reflection_prompt(sample_logs, last_failed_pattern, error_msg, rag_context)
                 continue
 
-            # 3. Hard Sandbox Security Gate (ReDoS & Coverage Check)
             is_valid, reason, coverage = SandboxValidator.validate_pattern(
                 pattern=regex_pattern,
                 sample_logs=sample_logs,
                 timeout_ms=50.0
             )
 
-            # 4. Verify that named groups extract values from samples
             extraction_valid = True
             semantic_error = ""
             for sample in sample_logs:
@@ -256,41 +293,30 @@ Do not include any explanation or Markdown outside the JSON.
                     extraction_valid = False
                     break
 
-                # Semantic IP Integrity Gate: src_ip and dst_ip must look like valid IPs
                 src_val = extracted.get(field_mappings.get("src_ip", ""), "")
-                dst_val = extracted.get(field_mappings.get("dst_ip", ""), "")
-
-                for field_name, val in [("src_ip", src_val), ("dst_ip", dst_val)]:
-                    if val and ("=" in val or not re.search(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}", val)):
-                        extraction_valid = False
-                        semantic_error = (
-                            f"Field '{field_name}' extracted '{val}', which is NOT a valid IP address. "
-                            f"You must anchor capture groups to their key names (e.g., src=(?P<{field_name}>\\S+))."
-                        )
-                        break
-                if not extraction_valid:
+                if src_val and ("=" in src_val or not re.search(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}", src_val)):
+                    extraction_valid = False
+                    semantic_error = f"Field 'src_ip' extracted '{src_val}', which is NOT a valid IP address. Adjust your capture group."
                     break
 
             if is_valid and coverage == 1.0 and extraction_valid:
-                rprint(f"    [green]✓ Sandbox Passed:[/green] 100% sample coverage & semantic IP integrity verified.")
+                rprint(f"    [green]✓ Sandbox Passed:[/green] 100% sample coverage & semantic integrity verified for {category} log.")
                 definition = ParserDefinition(
                     parser_id=parser_id,
                     parser_version="1.0.0",
-                    description="AI-synthesized dynamic parser (validated via sandbox reflexion)",
+                    description=f"AI-synthesized dynamic parser for {category} (validated via RAG reflexion)",
                     regex_pattern=regex_pattern,
                     field_mappings=field_mappings
                 )
 
-                # Hot-load into live registry
                 if self.registry.register(definition):
                     return definition
 
-            # Prepare reflection prompt for next iteration
             last_failed_pattern = regex_pattern
             error_reason = semantic_error if semantic_error else reason
             error_msg = f"{error_reason} (Coverage: {coverage * 100:.1f}%, Field Extraction Valid: {extraction_valid})"
             rprint(f"    [yellow]⚠ Reflexion Loop Triggered:[/yellow] {error_msg}")
-            current_prompt = self.build_reflection_prompt(sample_logs, last_failed_pattern, error_msg)
+            current_prompt = self.build_reflection_prompt(sample_logs, last_failed_pattern, error_msg, rag_context)
 
         return None
 
@@ -300,11 +326,9 @@ Do not include any explanation or Markdown outside the JSON.
         storage,
         batch_size: int = 50
     ) -> Dict[str, int]:
-        """Fetch PENDING_AI events, partition by structural skeleton clusters, synthesize, and commit."""
         if not self.spool:
             return {"triaged": 0, "clusters_detected": 0, "onboarded_parsers": 0, "committed": 0}
 
-        # Query events marked for AI attention
         with self.spool._get_connection() as conn:
             rows = conn.execute(
                 """
@@ -332,7 +356,6 @@ Do not include any explanation or Markdown outside the JSON.
             )
             pending_events.append(env)
 
-        # 1. Partition pending logs into homogeneous structural clusters
         clusters = cluster_unrecognized_events(pending_events)
         rprint(f"  • Clustered [bold]{len(pending_events)}[/bold] pending event(s) into [bold]{len(clusters)}[/bold] structural log signature(s).")
 
@@ -343,11 +366,9 @@ Do not include any explanation or Markdown outside the JSON.
             "committed": 0
         }
 
-        # 2. Process each cluster independently
         for cluster in clusters:
             rprint(f"    [dim]Processing Cluster [{cluster.cluster_id}] ({cluster.sample_count} events):[/dim] [italic]{cluster.skeleton[:70]}...[/italic]")
 
-            # Check if an existing parser in the registry already matches this cluster
             unhandled_events: List[EventEnvelope] = []
             for ev in cluster.events:
                 success, parsed_event = engine.parse_and_normalize(ev)
@@ -365,7 +386,6 @@ Do not include any explanation or Markdown outside the JSON.
             if not unhandled_events:
                 continue
 
-            # Synthesize a dedicated parser tailored specifically for this structural cluster
             cluster_parser_id = f"dynamic_ai_{cluster.cluster_id}_v1"
             definition = self.synthesize_and_onboard(
                 parser_id=cluster_parser_id,

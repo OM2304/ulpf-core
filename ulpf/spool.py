@@ -1,3 +1,4 @@
+import os
 import sqlite3
 from typing import Any, Dict, List, Optional
 from ulpf.models import EventEnvelope, EventStatus
@@ -11,20 +12,24 @@ class DurableSpool:
     """
 
     def __init__(self, db_path: str = "ulpf_spool.db"):
-        self.db_path = db_path
+        # Resolve to absolute path so working directory changes never lose the database file
+        self.db_path = os.path.abspath(db_path)
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
         """Create and configure a SQLite connection with Write-Ahead Logging (WAL)."""
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=30.0)
         conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA busy_timeout=5000;")
         conn.execute("PRAGMA synchronous=NORMAL;")
         conn.row_factory = sqlite3.Row
         return conn
 
     def _init_db(self):
         """Initialize the durable spool table schema with automated safe column migrations."""
-        with self._get_connection() as conn:
+        conn = self._get_connection()
+        try:
+            # 1. Create table and base index, then commit immediately
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS spool_events (
                     event_id TEXT PRIMARY KEY,
@@ -33,22 +38,32 @@ class DurableSpool:
                     raw_payload TEXT NOT NULL,
                     status TEXT NOT NULL,
                     parser_id TEXT,
+                    parser_version TEXT,
                     source_transport TEXT DEFAULT 'direct',
                     retry_count INTEGER DEFAULT 0,
                     last_error TEXT
                 );
             """)
-            # Non-destructive migrations for existing databases
-            for col_sql in [
-                "ALTER TABLE spool_events ADD COLUMN retry_count INTEGER DEFAULT 0;",
-                "ALTER TABLE spool_events ADD COLUMN last_error TEXT;",
-            ]:
-                try:
-                    conn.execute(col_sql)
-                except sqlite3.OperationalError:
-                    # Column already exists in this database
-                    pass
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_spool_status ON spool_events(status);")
             conn.commit()
+
+            # 2. Inspect existing columns before attempting ALTER TABLE to avoid aborted transactions
+            cursor = conn.execute("PRAGMA table_info(spool_events);")
+            existing_columns = {row["name"] for row in cursor.fetchall()}
+
+            migrations = [
+                ("parser_version", "ALTER TABLE spool_events ADD COLUMN parser_version TEXT;"),
+                ("source_transport", "ALTER TABLE spool_events ADD COLUMN source_transport TEXT DEFAULT 'direct';"),
+                ("retry_count", "ALTER TABLE spool_events ADD COLUMN retry_count INTEGER DEFAULT 0;"),
+                ("last_error", "ALTER TABLE spool_events ADD COLUMN last_error TEXT;"),
+            ]
+
+            for col_name, col_sql in migrations:
+                if col_name not in existing_columns:
+                    conn.execute(col_sql)
+            conn.commit()
+        finally:
+            conn.close()
 
     def persist_raw(self, payload: str, transport: str = "direct") -> EventEnvelope:
         """Create an EventEnvelope, persist it to SQLite disk spool, and return the envelope."""
@@ -68,6 +83,7 @@ class DurableSpool:
         ts = getattr(envelope, "received_at", getattr(envelope, "arrival_timestamp", None))
         timestamp_str = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
         transport = getattr(envelope, "source_transport", "direct")
+        parser_ver = getattr(envelope, "parser_version", None)
         retries = getattr(envelope, "retry_count", 0)
         err = getattr(envelope, "last_error", None)
 
@@ -75,8 +91,8 @@ class DurableSpool:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO spool_events (
-                    event_id, received_at, raw_sha256, raw_payload, status, parser_id, source_transport, retry_count, last_error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    event_id, received_at, raw_sha256, raw_payload, status, parser_id, parser_version, source_transport, retry_count, last_error
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     envelope.event_id,
@@ -85,6 +101,7 @@ class DurableSpool:
                     envelope.raw_payload,
                     status_val,
                     envelope.parser_id,
+                    parser_ver,
                     transport,
                     retries,
                     err,
@@ -111,7 +128,7 @@ class DurableSpool:
         with self._get_connection() as conn:
             rows = conn.execute(
                 """
-                SELECT event_id, received_at, raw_sha256, raw_payload, status, parser_id, source_transport,
+                SELECT event_id, received_at, raw_sha256, raw_payload, status, parser_id, parser_version, source_transport,
                        COALESCE(retry_count, 0) AS retry_count, last_error
                 FROM spool_events
                 WHERE status IN ('RECEIVED', 'DURABLY_STORED', 'PENDING')
@@ -136,6 +153,7 @@ class DurableSpool:
                 source_transport=r["source_transport"] if "source_transport" in r.keys() and r["source_transport"] else "direct",
                 status=status_enum,
                 parser_id=r["parser_id"],
+                parser_version=r["parser_version"] if "parser_version" in r.keys() else None,
                 retry_count=r["retry_count"] if "retry_count" in r.keys() and r["retry_count"] is not None else 0,
                 last_error=r["last_error"] if "last_error" in r.keys() else None,
             )

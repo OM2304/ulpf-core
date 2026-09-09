@@ -28,3 +28,8 @@ node_modules/
 .idea/
 *.swp
 .DS_Store
+
+# ULPF Specific: AI Vector Store, Generated Parsers, and Test Logs
+ulpf_chroma_db/
+ulpf/parsers/generated/*.json
+*.log
