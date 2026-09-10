@@ -420,37 +420,8 @@ async def list_events(
     disposition: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     _, storage, _, _, _ = _components(app)
-    query = """
-        SELECT event_id, parser_id, src_ip, dst_ip, protocol, action,
-               disposition, raw_payload, raw_sha256, ocsf_json
-        FROM normalized_events
-    """
-    parameters: List[Any] = []
-    if disposition is not None:
-        query += " WHERE disposition = ?"
-        parameters.append(disposition)
-    query += " ORDER BY rowid DESC LIMIT ? OFFSET ?"
-    parameters.extend([limit, offset])
     try:
-        with sqlite3.connect(storage.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(query, parameters).fetchall()
-        events: List[Dict[str, Any]] = []
-        for row in rows:
-            event = json.loads(row["ocsf_json"])
-            event.update({
-                "event_id": str(row["event_id"]),
-                "parser_id": str(row["parser_id"] or ""),
-                "src_ip": str(row["src_ip"] or ""),
-                "dst_ip": str(row["dst_ip"] or ""),
-                "protocol": str(row["protocol"] or ""),
-                "action": str(row["action"] or ""),
-                "disposition": str(row["disposition"] or ""),
-                "raw_payload": str(row["raw_payload"] or ""),
-                "raw_sha256": str(row["raw_sha256"] or ""),
-            })
-            events.append(event)
-        return events
+        return storage.list_events(limit=limit, offset=offset, disposition=disposition)
     except (sqlite3.Error, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=500, detail=f"event query failed: {exc}") from exc
 
