@@ -123,4 +123,67 @@ def test_path_ingest_endpoint(tmp_path):
 
         # Test non-existent path
         res_404 = client.post("/api/v1/ingest/path", json={"path": "C:\\non_existent_file_path.log"})
-        assert res_404.status_code == 404
+        assert res_404.status_code == 404
+
+
+def test_parsers_endpoints(tmp_path):
+    """Test GET /api/v1/parsers and DELETE /api/v1/parsers/{parser_id}."""
+    import json
+    from ulpf.listener import app
+
+    with TestClient(app) as client:
+        # 1. Test GET /api/v1/parsers
+        res = client.get("/api/v1/parsers")
+        assert res.status_code == 200
+        parsers = res.json()
+        assert isinstance(parsers, list)
+        assert len(parsers) > 0
+
+        # Verify core parsers exist and are marked correctly
+        core_parsers = [p for p in parsers if p.get("parser_type") == "core"]
+        assert len(core_parsers) > 0
+        for cp in core_parsers:
+            assert cp.get("read_only") is True
+            assert cp.get("deletable") is False
+
+        # Verify generated parsers have deletable=True
+        gen_parsers = [p for p in parsers if p.get("parser_type") == "generated"]
+        for gp in gen_parsers:
+            assert gp.get("deletable") is True
+            assert gp.get("read_only") is False
+
+        # 2. Test DELETE core parser returns 403 Forbidden
+        first_core_id = core_parsers[0]["parser_id"]
+        res_core_del = client.delete(f"/api/v1/parsers/{first_core_id}")
+        assert res_core_del.status_code == 403
+
+        # 3. Create dummy generated parser, verify delete works
+        gen_dir = os.path.join(os.path.dirname(__file__), "..", "ulpf", "parsers", "generated")
+        dummy_id = "test_dummy_generated_v1"
+        dummy_file = os.path.join(gen_dir, f"{dummy_id}.json")
+        with open(dummy_file, "w", encoding="utf-8") as f:
+            json.dump({
+                "parser_id": dummy_id,
+                "parser_version": "1.0.0",
+                "description": "Test dummy parser",
+                "regex_pattern": r"test:\s+(?P<val>\w+)",
+                "field_mappings": {"val": "test_val"}
+            }, f)
+
+        try:
+            # Confirm it shows in GET
+            res_after_add = client.get("/api/v1/parsers")
+            assert any(p["parser_id"] == dummy_id for p in res_after_add.json())
+
+            # Delete generated parser
+            del_res = client.delete(f"/api/v1/parsers/{dummy_id}")
+            assert del_res.status_code == 200
+            assert del_res.json()["status"] == "success"
+            assert not os.path.exists(dummy_file)
+
+            # Confirm 404 when deleting again
+            del_res_404 = client.delete(f"/api/v1/parsers/{dummy_id}")
+            assert del_res_404.status_code == 404
+        finally:
+            if os.path.exists(dummy_file):
+                os.remove(dummy_file)

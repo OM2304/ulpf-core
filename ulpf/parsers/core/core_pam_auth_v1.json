@@ -1,0 +1,11 @@
+{
+  "parser_id": "core_pam_auth_v1",
+  "parser_version": "1.0.0",
+  "description": "Linux PAM Authentication Syslog (Class 3002 Authentication)",
+  "regex_pattern": "(?i).*?(?P<action>session|login|password).*?(?P<status>opened|closed|failed|success).*?(?:user|for)\\s+(?P<user>\\S+)",
+  "field_mappings": {
+    "user": "user",
+    "action": "action",
+    "status": "status"
+  }
+}

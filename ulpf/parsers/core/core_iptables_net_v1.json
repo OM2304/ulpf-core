@@ -1,0 +1,12 @@
+{
+  "parser_id": "core_iptables_net_v1",
+  "parser_version": "1.0.0",
+  "description": "Kernel Netfilter / iptables Network Event (Class 4001 Network Activity)",
+  "regex_pattern": "(?i).*?src=(?P<src_ip>\\d+\\.\\d+\\.\\d+\\.\\d+).*?dst=(?P<dst_ip>\\d+\\.\\d+\\.\\d+\\.\\d+).*?proto=(?P<proto>\\S+).*?(?P<action>DROP|ACCEPT|REJECT|DENY|BLOCK|ALLOW)",
+  "field_mappings": {
+    "src_ip": "src_ip",
+    "dst_ip": "dst_ip",
+    "proto": "proto",
+    "action": "action"
+  }
+}

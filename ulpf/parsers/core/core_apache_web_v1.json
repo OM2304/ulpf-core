@@ -1,0 +1,12 @@
+{
+  "parser_id": "core_apache_web_v1",
+  "parser_version": "1.0.0",
+  "description": "Standard Apache/Nginx Web Access Log (Class 4002 HTTP Activity)",
+  "regex_pattern": "(?i)^(?P<src_ip>\\d+\\.\\d+\\.\\d+\\.\\d+).*?(?P<method>GET|POST|PUT|DELETE)\\s+(?P<url>\\S+)\\s+HTTP.*?\"?\\s+(?P<status>\\d{3})",
+  "field_mappings": {
+    "src_ip": "src_ip",
+    "method": "method",
+    "url": "url",
+    "status": "status"
+  }
+}

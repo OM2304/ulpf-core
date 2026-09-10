@@ -166,31 +166,32 @@ class DurableSpool:
         status: EventStatus, 
         parser_id: Optional[str] = None,
         error_msg: Optional[str] = None
-    ) -> None:
+    ) -> bool:
         """Update the lifecycle status, parser association, and optional error state of a spooled event."""
         status_val = status.value if hasattr(status, "value") else str(status)
         with self._get_connection() as conn:
             if parser_id and error_msg:
-                conn.execute(
+                cursor = conn.execute(
                     "UPDATE spool_events SET status = ?, parser_id = ?, last_error = ? WHERE event_id = ?",
                     (status_val, parser_id, error_msg, event_id),
                 )
             elif parser_id:
-                conn.execute(
+                cursor = conn.execute(
                     "UPDATE spool_events SET status = ?, parser_id = ? WHERE event_id = ?",
                     (status_val, parser_id, event_id),
                 )
             elif error_msg:
-                conn.execute(
+                cursor = conn.execute(
                     "UPDATE spool_events SET status = ?, last_error = ? WHERE event_id = ?",
                     (status_val, error_msg, event_id),
                 )
             else:
-                conn.execute(
+                cursor = conn.execute(
                     "UPDATE spool_events SET status = ? WHERE event_id = ?",
                     (status_val, event_id),
                 )
             conn.commit()
+            return cursor.rowcount > 0
 
     # --- Dead-Letter & Poison Pill Governance ---
 
@@ -260,3 +261,24 @@ class DurableSpool:
                 (EventStatus.QUARANTINED.value, reason, event_id),
             )
             conn.commit()
+
+    def retry_event(self, event_id: str) -> bool:
+        """Put an event back into the AI triage queue and clear stale retry state."""
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE spool_events
+                SET status = ?, retry_count = 0, last_error = NULL
+                WHERE event_id = ?
+                """,
+                (EventStatus.PENDING_AI.value, event_id),
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def delete_event(self, event_id: str) -> bool:
+        """Permanently remove an event from the durable spool."""
+        with self._get_connection() as conn:
+            cursor = conn.execute("DELETE FROM spool_events WHERE event_id = ?", (event_id,))
+            conn.commit()
+            return cursor.rowcount > 0

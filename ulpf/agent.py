@@ -2,8 +2,9 @@ import ast
 import json
 import os
 import re
+from collections import deque
 from typing import Callable, Dict, List, Optional, Tuple
-from rich import print as rprint
+from rich import print as _rich_print
 import chromadb
 from chromadb.utils import embedding_functions
 
@@ -11,6 +12,16 @@ from ulpf.clustering import cluster_unrecognized_events
 from ulpf.models import EventEnvelope, EventStatus
 from ulpf.registry import DynamicParserRegistry, ParserDefinition, SandboxValidator
 from ulpf.spool import DurableSpool
+
+global_agent_logs = deque(maxlen=200)
+
+
+def rprint(*args, **kwargs):
+    _rich_print(*args, **kwargs)
+    text = " ".join(str(a) for a in args)
+    clean_text = re.sub(r"\[.*?\]", "", text).strip()
+    if clean_text:
+        global_agent_logs.append(clean_text)
 
 
 class ParserSynthesisAgent:

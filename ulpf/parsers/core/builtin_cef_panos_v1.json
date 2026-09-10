@@ -1,0 +1,12 @@
+{
+  "parser_id": "builtin_cef_panos_v1",
+  "parser_version": "1.0.0",
+  "description": "Palo Alto CEF Traffic & Threat Parser (Class 4001 Network Activity)",
+  "regex_pattern": "CEF:\\d+\\|(?P<vendor>[^|]+)\\|(?P<product>[^|]+)\\|[^|]+\\|[^|]+\\|(?P<raw_action>[^|]+)\\|(?P<severity>[^|]+)\\|(?P<extension>.*)",
+  "field_mappings": {
+    "src_ip": "src_endpoint.ip",
+    "dst_ip": "dst_endpoint.ip",
+    "proto": "connection_info.protocol_name",
+    "action": "action"
+  }
+}

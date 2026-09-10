@@ -25,6 +25,8 @@ export const api = {
     if (status) search.set('status', status)
     return request(`/api/v1/spool/events?${search}`)
   },
+  retrySpoolEvent: (eventId) => request(`/api/v1/spool/retry/${encodeURIComponent(eventId)}`, { method: 'POST' }),
+  dropSpoolEvent: (eventId) => request(`/api/v1/spool/drop/${encodeURIComponent(eventId)}`, { method: 'DELETE' }),
   parsers: () => request('/api/v1/parsers'),
   events: (params = {}) => {
     const search = new URLSearchParams()
@@ -42,6 +44,9 @@ export const api = {
     body: JSON.stringify({ path }),
   }),
   getConsoleLogs: () => request('/api/v1/console/logs'),
+  deleteParser: (parserId) => request(`/api/v1/parsers/${encodeURIComponent(parserId)}`, {
+    method: 'DELETE',
+  }),
   triage: () => request('/api/v1/triage/trigger', { method: 'POST' }),
 }
 

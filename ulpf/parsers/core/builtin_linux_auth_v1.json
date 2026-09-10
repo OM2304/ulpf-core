@@ -1,0 +1,12 @@
+{
+  "parser_id": "builtin_linux_auth_v1",
+  "parser_version": "1.0.0",
+  "description": "Linux SSH Auth Syslog Parser (Class 3002 Authentication)",
+  "regex_pattern": "sshd\\[\\d+\\]:\\s+(?P<message>Failed password|Accepted password|Accepted publickey|Invalid user|Connection closed)\\b",
+  "field_mappings": {
+    "src_ip": "src_endpoint.ip",
+    "dst_ip": "dst_endpoint.ip",
+    "proto": "connection_info.protocol_name",
+    "action": "action"
+  }
+}

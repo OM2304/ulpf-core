@@ -11,6 +11,7 @@ from fastapi import FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from ulpf.agent import global_agent_logs
 from ulpf.agent_worker import AgentWorker
 from ulpf.coordinator import PipelineCoordinator
 from ulpf.engine import DeterministicEngine
@@ -187,22 +188,31 @@ async def ingest_file_path(req: PathIngestRequest):
     if not os.path.exists(target_path):
         raise HTTPException(status_code=404, detail=f"Log file not found at path: {target_path}")
 
-    ingested_count = 0
-    with open(target_path, "r", encoding="utf-8", errors="ignore") as f:
-        for line in f:
-            payload = line.strip()
-            if not payload:
-                continue
-            envelope = EventEnvelope(raw_payload=payload, source_transport="web_upload")
-            success, parsed = engine.parse_and_normalize(envelope)
-            if success and parsed.status == EventStatus.COMMITTED:
-                storage.commit_event(parsed)
-                spool.spool(parsed)
-            else:
-                parsed.status = EventStatus.PENDING_AI
-                spool.spool(parsed)
-            ingested_count += 1
+    def process_file_sync():
+        count = 0
+        with open(target_path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                payload = line.strip()
+                if not payload:
+                    continue
+                envelope = EventEnvelope(raw_payload=payload, source_transport="web_upload")
+                success, parsed = engine.parse_and_normalize(envelope)
+                if success and parsed.status == EventStatus.COMMITTED:
+                    storage.commit_event(parsed)
+                    spool.spool(parsed)
+                else:
+                    parsed.status = EventStatus.PENDING_AI
+                    spool.spool(parsed)
+                count += 1
+        return count
+
+    ingested_count = await asyncio.to_thread(process_file_sync)
     return {"status": "success", "total_ingested": ingested_count, "path": target_path}
+
+
+@app.get("/api/v1/console/logs")
+async def get_console_logs() -> Dict[str, List[str]]:
+    return {"logs": list(global_agent_logs)}
 
 
 def _query_spool_counts(db_path: str) -> Dict[str, int]:
@@ -237,7 +247,7 @@ async def spool_events(
     limit: int = Query(default=50, ge=1, le=500),
     status_filter: Optional[str] = Query(default=None, alias="status"),
 ) -> List[Dict[str, Any]]:
-    spool, _, _, _, _ = _components(app)
+    spool, storage, _, _, _ = _components(app)
     query = """
         SELECT event_id, received_at, raw_sha256, raw_payload, status,
                parser_id, COALESCE(retry_count, 0) AS retry_count
@@ -256,6 +266,27 @@ async def spool_events(
     except sqlite3.Error as exc:
         raise HTTPException(status_code=500, detail=f"spool query failed: {exc}") from exc
 
+    # Normalized OCSF data is persisted in the analytical database rather than
+    # the durable spool database. Fetch it for the committed spool rows so the
+    # forensic spool view can display both representations of an event.
+    ocsf_by_event_id: Dict[str, Any] = {}
+    event_ids = [row["event_id"] for row in rows]
+    if event_ids:
+        placeholders = ",".join("?" for _ in event_ids)
+        try:
+            with sqlite3.connect(storage.db_path) as conn:
+                normalized_rows = conn.execute(
+                    f"SELECT event_id, ocsf_json FROM normalized_events WHERE event_id IN ({placeholders})",
+                    event_ids,
+                ).fetchall()
+            for event_id, ocsf_json in normalized_rows:
+                try:
+                    ocsf_by_event_id[event_id] = json.loads(ocsf_json)
+                except (TypeError, json.JSONDecodeError):
+                    logger.warning("Invalid ocsf_json for event %s", event_id)
+        except sqlite3.Error as exc:
+            raise HTTPException(status_code=500, detail=f"normalized event query failed: {exc}") from exc
+
     return [
         {
             "event_id": str(row["event_id"]),
@@ -265,56 +296,121 @@ async def spool_events(
             "status": str(row["status"]),
             "parser_id": row["parser_id"],
             "retry_count": int(row["retry_count"] or 0),
+            "ocsf_json": ocsf_by_event_id.get(row["event_id"]),
         }
         for row in rows
     ]
 
 
-def _builtin_parser_records() -> List[Dict[str, Any]]:
-    return [
-        {
-            "parser_id": "builtin_cef_panos_v1",
-            "regex_pattern": r"CEF:\d+\|(?P<vendor>[^|]+)\|(?P<product>[^|]+)\|[^|]+\|[^|]+\|(?P<raw_action>[^|]+)\|(?P<severity>[^|]+)\|(?P<extension>.*)",
-            "field_mappings": {
-                "src_ip": "src_endpoint.ip",
-                "dst_ip": "dst_endpoint.ip",
-                "proto": "connection_info.protocol_name",
-                "action": "action",
-            },
-            "source_format": "Palo Alto CEF",
-            "origin": "builtin",
-        },
-        {
-            "parser_id": "builtin_linux_auth_v1",
-            "regex_pattern": r"sshd\[\d+\]:\s+(?P<message>Failed password|Accepted password|Accepted publickey|Invalid user|Connection closed)\b",
-            "field_mappings": {
-                "src_ip": "src_endpoint.ip",
-                "dst_ip": "dst_endpoint.ip",
-                "proto": "connection_info.protocol_name",
-                "action": "action",
-            },
-            "source_format": "Linux SSH auth syslog",
-            "origin": "builtin",
-        },
-    ]
+@app.post("/api/v1/spool/retry/{event_id}")
+async def retry_spool_event(event_id: str) -> Dict[str, str]:
+    spool, _, _, _, _ = _components(app)
+    if not spool.retry_event(event_id):
+        raise HTTPException(status_code=404, detail=f"Spool event '{event_id}' not found")
+    return {"event_id": event_id, "status": EventStatus.PENDING_AI.value}
+
+
+@app.delete("/api/v1/spool/drop/{event_id}")
+async def drop_spool_event(event_id: str) -> Dict[str, str]:
+    spool, _, _, _, _ = _components(app)
+    if not spool.delete_event(event_id):
+        raise HTTPException(status_code=404, detail=f"Spool event '{event_id}' not found")
+    return {"event_id": event_id, "status": "DROPPED"}
+
+
+def _scan_parsers_dir(directory: str, parser_type: str) -> List[Dict[str, Any]]:
+    parsers = []
+    if not os.path.exists(directory):
+        return parsers
+    for fname in sorted(os.listdir(directory)):
+        if not fname.endswith(".json"):
+            continue
+        filepath = os.path.join(directory, fname)
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            data["parser_type"] = parser_type
+            data["origin"] = parser_type
+            data["is_generated"] = (parser_type == "generated")
+            data["deletable"] = (parser_type == "generated")
+            data["read_only"] = (parser_type == "core")
+            parsers.append(data)
+        except Exception as exc:
+            logger.warning("Failed to parse parser file %s: %s", filepath, exc)
+    return parsers
 
 
 @app.get("/api/v1/parsers")
 async def list_parsers() -> List[Dict[str, Any]]:
-    _, _, registry, _, _ = _components(app)
-    parsers: List[Dict[str, Any]] = _builtin_parser_records()
-    for parser_id in registry.list_parsers():
-        definition = registry.get_parser(parser_id)
-        if definition is None:
-            continue
-        parsers.append({
-            "parser_id": definition.parser_id,
-            "regex_pattern": definition.regex_pattern,
-            "field_mappings": definition.field_mappings,
-            "source_format": getattr(definition, "source_format", None),
-            "origin": "autonomous_agent",
-        })
-    return parsers
+    base_dir = os.path.dirname(__file__)
+    core_dir = os.path.join(base_dir, "parsers", "core")
+    generated_dir = os.path.join(base_dir, "parsers", "generated")
+
+    core_parsers = _scan_parsers_dir(core_dir, "core")
+    generated_parsers = _scan_parsers_dir(generated_dir, "generated")
+
+    seen_ids = set()
+    result = []
+    for p in core_parsers + generated_parsers:
+        pid = p.get("parser_id")
+        if pid and pid not in seen_ids:
+            seen_ids.add(pid)
+            result.append(p)
+    return result
+
+
+@app.delete("/api/v1/parsers/{parser_id}")
+async def delete_parser(parser_id: str):
+    clean_id = parser_id.strip()
+    if clean_id.endswith(".json"):
+        clean_id = clean_id[:-5]
+
+    base_dir = os.path.dirname(__file__)
+    core_dir = os.path.join(base_dir, "parsers", "core")
+    generated_dir = os.path.join(base_dir, "parsers", "generated")
+
+    core_file = os.path.join(core_dir, f"{clean_id}.json")
+    if os.path.exists(core_file):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Core parser '{clean_id}' is read-only and cannot be deleted."
+        )
+
+    gen_file = os.path.join(generated_dir, f"{clean_id}.json")
+    if not os.path.exists(gen_file):
+        matching_file = None
+        if os.path.exists(generated_dir):
+            for fname in os.listdir(generated_dir):
+                if fname.lower() == f"{clean_id.lower()}.json" or fname.lower() == clean_id.lower():
+                    matching_file = os.path.join(generated_dir, fname)
+                    break
+        if matching_file and os.path.exists(matching_file):
+            gen_file = matching_file
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Generated parser '{clean_id}' not found."
+            )
+
+    try:
+        os.remove(gen_file)
+    except OSError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete parser file: {exc}"
+        )
+
+    try:
+        _, _, registry, _, _ = _components(app)
+        registry.remove_parser(clean_id, remove_from_disk=False)
+    except Exception:
+        pass
+
+    return {
+        "status": "success",
+        "message": f"Generated parser '{clean_id}' successfully deleted.",
+        "parser_id": clean_id,
+    }
 
 
 @app.get("/api/v1/events")
