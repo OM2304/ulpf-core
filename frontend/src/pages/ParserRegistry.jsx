@@ -53,8 +53,8 @@ export default function ParserRegistry() {
         description="Active validated core and AI-synthesized parsers currently available to the normalization engine."
         actions={
           <div className="flex items-center gap-3">
-            <span className="text-xs font-mono text-gray-400 hidden sm:inline">
-              Core: <strong className="text-cyan-400">{coreCount}</strong> | Generated: <strong className="text-amber-400">{generatedCount}</strong>
+            <span className="text-xs font-mono text-slate-500 dark:text-gray-400 hidden sm:inline">
+              Core: <strong className="text-cyan-600 dark:text-cyan-400">{coreCount}</strong> | Generated: <strong className="text-amber-600 dark:text-amber-400">{generatedCount}</strong>
             </span>
             <button
               className="button button-ghost flex items-center gap-2"
@@ -92,6 +92,40 @@ export default function ParserRegistry() {
   )
 }
 
+function renderRegexTokens(pattern) {
+  if (!pattern) return '—'
+  const tokenRegex = /(\(\?P?<[a-zA-Z0-9_]+>)|(\(|\))|(\^|\$|\+|\*|\?|\{\d+,?\d*\}|\|)|(\\[dswDSWbB]|\\[0-9a-zA-Z]|\[[^\]]+\])|([^\s()^$+*?{|]+|\s+)/g
+  const parts = []
+  let match
+  let key = 0
+
+  while ((match = tokenRegex.exec(pattern)) !== null) {
+    const [full, namedGroup, paren, quantifier, charClass] = match
+    if (namedGroup) {
+      const varName = namedGroup.replace(/^\(\?P?</, '').replace(/>$/, '')
+      parts.push(
+        <span key={key++} className="text-indigo-700 dark:text-indigo-300 font-bold">(?&lt;</span>,
+        <span key={key++} className="text-sky-700 dark:text-sky-400 font-semibold">{varName}</span>,
+        <span key={key++} className="text-indigo-700 dark:text-indigo-300 font-bold">&gt;</span>
+      )
+    } else if (paren || quantifier) {
+      parts.push(
+        <span key={key++} className="text-indigo-700 dark:text-indigo-300 font-bold">{full}</span>
+      )
+    } else if (charClass) {
+      parts.push(
+        <span key={key++} className="text-teal-700 dark:text-teal-400 font-medium">{full}</span>
+      )
+    } else {
+      parts.push(
+        <span key={key++} className="text-slate-800 dark:text-slate-200">{full}</span>
+      )
+    }
+  }
+
+  return parts.length > 0 ? parts : pattern
+}
+
 function ParserCard({ parser, onDelete, isDeleting }) {
   const isGenerated =
     parser.origin === 'generated' ||
@@ -100,24 +134,24 @@ function ParserCard({ parser, onDelete, isDeleting }) {
     parser.deletable === true
 
   return (
-    <article className="parser-card flex flex-col justify-between">
+    <article className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-sm rounded-lg flex flex-col justify-between overflow-hidden">
       <div>
-        <div className="parser-card-header flex items-center justify-between gap-3">
-          <div className="parser-title flex items-center gap-2 min-w-0">
-            <FileCode2 size={17} className="shrink-0 text-cyan-400" />
-            <strong className="truncate font-mono text-xs text-gray-100" title={parser.parser_id}>
+        <div className="p-4 flex items-center justify-between gap-3 border-b border-slate-200/80 dark:border-slate-800">
+          <div className="flex items-center gap-2 min-w-0">
+            <FileCode2 size={17} className="shrink-0 text-cyan-600 dark:text-cyan-400" />
+            <strong className="truncate font-mono text-xs text-slate-800 dark:text-gray-100" title={parser.parser_id}>
               {parser.parser_id}
             </strong>
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
             {isGenerated ? (
-              <span className="origin-badge bg-amber-950/60 border border-amber-800/80 text-amber-300 flex items-center gap-1">
+              <span className="origin-badge bg-amber-100 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-800/80 text-amber-800 dark:text-amber-300 flex items-center gap-1 font-semibold">
                 <Sparkles size={11} />
                 generated
               </span>
             ) : (
-              <span className="origin-badge bg-cyan-950/60 border border-cyan-800/80 text-cyan-300 flex items-center gap-1">
+              <span className="origin-badge bg-cyan-100 dark:bg-cyan-950/60 border border-cyan-300 dark:border-cyan-800/80 text-cyan-800 dark:text-cyan-300 flex items-center gap-1 font-semibold">
                 <Shield size={11} />
                 core (read-only)
               </span>
@@ -128,7 +162,7 @@ function ParserCard({ parser, onDelete, isDeleting }) {
                 type="button"
                 onClick={() => onDelete(parser.parser_id)}
                 disabled={isDeleting}
-                className="px-2 py-1 text-[11px] font-mono text-rose-300 bg-rose-950/80 border border-rose-800 rounded hover:bg-rose-900 transition-colors flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                className="px-2 py-1 text-[11px] font-mono text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/80 border border-rose-300 dark:border-rose-800 rounded hover:bg-rose-100 dark:hover:bg-rose-900 transition-colors flex items-center gap-1 cursor-pointer disabled:opacity-50"
                 title="Delete generated parser"
               >
                 <Trash2 size={12} />
@@ -140,31 +174,37 @@ function ParserCard({ parser, onDelete, isDeleting }) {
 
         {/* Description */}
         <div className="px-4 pt-3 pb-1">
-          <p className="text-xs text-gray-400 leading-relaxed font-sans">
+          <p className="text-xs text-slate-600 dark:text-gray-400 leading-relaxed font-sans">
             {parser.description || 'No description provided.'}
           </p>
         </div>
 
         {/* Regex Pattern Block */}
-        <div className="regex-block">
-          <div className="code-label">
-            <Braces size={13} /> regex pattern
+        <div className="mx-4 my-3 p-3 rounded-md border bg-slate-50 border-slate-200 text-slate-800 dark:bg-slate-950/60 dark:border-slate-800 dark:text-slate-200">
+          <div className="flex items-center gap-1.5 text-[10px] uppercase font-bold tracking-wider mb-2 text-slate-500 dark:text-slate-400 font-mono">
+            <Braces size={13} className="text-cyan-600 dark:text-cyan-400" /> regex pattern
           </div>
-          <code>{parser.regex_pattern || '—'}</code>
+          <code className="block font-mono text-[11px] leading-relaxed break-all">
+            {renderRegexTokens(parser.regex_pattern)}
+          </code>
         </div>
       </div>
 
       {/* Field Mappings Block */}
       {parser.field_mappings && Object.keys(parser.field_mappings).length > 0 && (
-        <div className="mapping-block">
-          <p className="code-label">field mappings</p>
-          {Object.entries(parser.field_mappings).map(([key, value]) => (
-            <div className="mapping-row" key={key}>
-              <span>{key}</span>
-              <i>→</i>
-              <strong>{value}</strong>
-            </div>
-          ))}
+        <div className="mx-4 mb-4 p-3 rounded-md border bg-slate-50 border-slate-200 text-slate-800 dark:bg-slate-950/60 dark:border-slate-800 dark:text-slate-200">
+          <p className="text-[10px] uppercase font-bold tracking-wider mb-2 text-slate-500 dark:text-slate-400 font-mono">
+            field mappings
+          </p>
+          <div className="space-y-1 font-mono text-[11px]">
+            {Object.entries(parser.field_mappings).map(([key, value]) => (
+              <div className="flex items-center justify-between gap-2 py-0.5 text-slate-600 dark:text-slate-300" key={key}>
+                <span className="text-sky-700 dark:text-sky-400 font-medium">{key}</span>
+                <i className="text-slate-400 not-italic">→</i>
+                <strong className="text-teal-700 dark:text-teal-400 font-semibold">{value}</strong>
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </article>

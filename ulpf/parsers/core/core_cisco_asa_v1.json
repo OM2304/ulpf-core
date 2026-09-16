@@ -1,0 +1,12 @@
+{
+  "parser_id": "core_cisco_asa_v1",
+  "parser_version": "1.0.0",
+  "description": "NETWORK",
+  "regex_pattern": "(?i)%ASA-\\d-\\d+:\\s+(?P<action>Deny|Teardown|Built|Allow)\\s+(?P<proto>tcp|udp|icmp).*?src.*?:(?P<src_ip>\\d+\\.\\d+\\.\\d+\\.\\d+).*?dst.*?:(?P<dst_ip>\\d+\\.\\d+\\.\\d+\\.\\d+)",
+  "field_mappings": {
+    "src_ip": "src_ip",
+    "dst_ip": "dst_ip",
+    "proto": "proto",
+    "action": "action"
+  }
+}

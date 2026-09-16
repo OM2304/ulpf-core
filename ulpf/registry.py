@@ -79,6 +79,7 @@ class DynamicParserRegistry:
 
     def _pre_seed_parsers(self) -> None:
         """Register standard web, authentication, and network formats."""
+        # 1. Apache Web Logs
         self.register(
             ParserDefinition(
                 parser_id="core_apache_web_v1",
@@ -89,6 +90,7 @@ class DynamicParserRegistry:
             ),
             persist=False,
         )
+        # 2. Linux PAM Auth Logs
         self.register(
             ParserDefinition(
                 parser_id="core_pam_auth_v1",
@@ -99,12 +101,46 @@ class DynamicParserRegistry:
             ),
             persist=False,
         )
+        # 3. Linux IPtables/UFW Network Logs
         self.register(
             ParserDefinition(
                 parser_id="core_iptables_net_v1",
                 parser_version="1.0.0",
                 description="NETWORK",
                 regex_pattern=r"(?i).*?src=(?P<src_ip>\d+\.\d+\.\d+\.\d+).*?dst=(?P<dst_ip>\d+\.\d+\.\d+\.\d+).*?proto=(?P<proto>\S+).*?(?P<action>DROP|ACCEPT|REJECT|DENY|BLOCK|ALLOW)",
+                field_mappings={"src_ip": "src_ip", "dst_ip": "dst_ip", "proto": "proto", "action": "action"},
+            ),
+            persist=False,
+        )
+        # 4. Nginx Web Logs (High Volume)
+        self.register(
+            ParserDefinition(
+                parser_id="core_nginx_web_v1",
+                parser_version="1.0.0",
+                description="WEB",
+                regex_pattern=r'(?i)^(?P<src_ip>\d+\.\d+\.\d+\.\d+)\s+-\s+-\s+\[.*?\]\s+"(?P<method>GET|POST|PUT|DELETE|HEAD|OPTIONS)\s+(?P<url>\S+)\s+HTTP.*?"\s+(?P<status>\d{3})',
+                field_mappings={"src_ip": "src_ip", "method": "method", "url": "url", "status": "status"},
+            ),
+            persist=False,
+        )
+        # 5. AWS VPC Flow Logs (Standard Format)
+        self.register(
+            ParserDefinition(
+                parser_id="core_aws_vpc_v1",
+                parser_version="1.0.0",
+                description="NETWORK",
+                regex_pattern=r"(?i)^\d+\s+\d+\s+eni-[a-z0-9]+\s+(?P<src_ip>\d+\.\d+\.\d+\.\d+)\s+(?P<dst_ip>\d+\.\d+\.\d+\.\d+)\s+\d+\s+\d+\s+(?P<proto>\d+)\s+\d+\s+\d+\s+\d+\s+\d+\s+(?P<action>ACCEPT|REJECT)\s+(?P<status>OK|NODATA|SKIPDATA)",
+                field_mappings={"src_ip": "src_ip", "dst_ip": "dst_ip", "proto": "proto", "action": "action"},
+            ),
+            persist=False,
+        )
+        # 6. Cisco ASA Firewall Logs
+        self.register(
+            ParserDefinition(
+                parser_id="core_cisco_asa_v1",
+                parser_version="1.0.0",
+                description="NETWORK",
+                regex_pattern=r"(?i)%ASA-\d-\d+:\s+(?P<action>Deny|Teardown|Built|Allow)\s+(?P<proto>tcp|udp|icmp).*?src.*?:(?P<src_ip>\d+\.\d+\.\d+\.\d+).*?dst.*?:(?P<dst_ip>\d+\.\d+\.\d+\.\d+)",
                 field_mappings={"src_ip": "src_ip", "dst_ip": "dst_ip", "proto": "proto", "action": "action"},
             ),
             persist=False,

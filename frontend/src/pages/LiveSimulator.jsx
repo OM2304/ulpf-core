@@ -42,16 +42,16 @@ function AgentTriageSteps({ activeStep, completed = false, showTimes = false }) 
           <div
             key={step.label}
             className={`flex items-start gap-2.5 transition-colors duration-200 ${
-              isComplete ? 'text-slate-400' : isActive ? 'font-medium text-cyan-400' : 'text-slate-600'
+              isComplete ? 'text-slate-500 dark:text-slate-400' : isActive ? 'font-medium text-cyan-600 dark:text-cyan-400' : 'text-slate-400 dark:text-slate-600'
             }`}
           >
             <span className="mt-0.5 shrink-0">
               {isComplete ? (
-                <CheckCircle2 size={14} className="text-emerald-400" />
+                <CheckCircle2 size={14} className="text-emerald-500 dark:text-emerald-400" />
               ) : isActive ? (
-                <Loader2 size={14} className="animate-spin text-cyan-400" />
+                <Loader2 size={14} className="animate-spin text-cyan-600 dark:text-cyan-400" />
               ) : (
-                <Circle size={14} className="text-slate-700" />
+                <Circle size={14} className="text-slate-300 dark:text-slate-700" />
               )}
             </span>
             <span className="min-w-0 flex-1">{step.label}</span>
@@ -65,11 +65,11 @@ function AgentTriageSteps({ activeStep, completed = false, showTimes = false }) 
 
 function AgentTriageConsole({ activeStep }) {
   return (
-    <div className="rounded-xl border border-cyan-500/30 bg-slate-950/80 p-5 font-mono text-xs backdrop-blur-xl shadow-[0_0_30px_-5px_rgba(6,182,212,0.15)] animate-float-in">
-      <div className="mb-4 flex items-center gap-2.5 border-b border-slate-800/80 pb-3 text-cyan-400">
+    <div className="rounded-xl border border-cyan-500/40 bg-white/90 dark:bg-slate-950/80 p-5 font-mono text-xs backdrop-blur-xl shadow-lg dark:shadow-[0_0_30px_-5px_rgba(6,182,212,0.15)] animate-float-in">
+      <div className="mb-4 flex items-center gap-2.5 border-b border-slate-200 dark:border-slate-800/80 pb-3 text-cyan-600 dark:text-cyan-400">
         <span className="relative flex h-2 w-2">
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-cyan-400 opacity-75" />
-          <span className="relative inline-flex h-2 w-2 rounded-full bg-cyan-400" />
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-cyan-500 dark:bg-cyan-400 opacity-75" />
+          <span className="relative inline-flex h-2 w-2 rounded-full bg-cyan-500 dark:bg-cyan-400" />
         </span>
         <span className="font-semibold tracking-wide">AI Parser Agent Running...</span>
       </div>
@@ -80,27 +80,27 @@ function AgentTriageConsole({ activeStep }) {
 
 function ExecutionTrace({ isOpen, onToggle }) {
   return (
-    <div className="rounded-xl border border-slate-800/80 bg-slate-900/60 backdrop-blur-md shadow-lg shadow-black/40 transition-all duration-300 ease-out hover:border-slate-700 animate-float-in">
+    <div className="rounded-xl border border-slate-200 dark:border-slate-800/80 bg-white dark:bg-slate-900/60 backdrop-blur-md shadow-sm dark:shadow-lg dark:shadow-black/40 transition-all duration-300 ease-out hover:border-slate-300 dark:hover:border-slate-700 animate-float-in">
       <button
         className="flex w-full cursor-pointer items-center justify-between gap-3 px-4 py-3 text-left transition"
         onClick={onToggle}
         aria-expanded={isOpen}
       >
         <span className="flex min-w-0 items-center gap-2.5">
-          <Sparkles size={15} className="shrink-0 text-cyan-400 animate-pulse" />
-          <span className="truncate text-xs font-medium text-slate-300">Pipeline execution trace</span>
-          <span className="shrink-0 rounded border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 font-mono text-[9px] text-emerald-300">
+          <Sparkles size={15} className="shrink-0 text-cyan-600 dark:text-cyan-400 animate-pulse" />
+          <span className="truncate text-xs font-medium text-slate-700 dark:text-slate-300">Pipeline execution trace</span>
+          <span className="shrink-0 rounded border border-emerald-500/30 bg-emerald-50 dark:bg-emerald-400/10 px-2 py-0.5 font-mono text-[9px] text-emerald-700 dark:text-emerald-300 font-semibold">
             5/5 Stages Succeeded
           </span>
         </span>
         {isOpen ? (
-          <ChevronDown size={15} className="shrink-0 text-slate-400 transition-transform duration-200" />
+          <ChevronDown size={15} className="shrink-0 text-slate-500 dark:text-slate-400 transition-transform duration-200" />
         ) : (
-          <ChevronRight size={15} className="shrink-0 text-slate-400 transition-transform duration-200" />
+          <ChevronRight size={15} className="shrink-0 text-slate-500 dark:text-slate-400 transition-transform duration-200" />
         )}
       </button>
       {isOpen && (
-        <div className="border-t border-slate-800/80 bg-slate-950/40 px-4 py-3 font-mono text-[10px] leading-6 animate-float-in">
+        <div className="border-t border-slate-200 dark:border-slate-800/80 bg-slate-50 dark:bg-slate-950/40 px-4 py-3 font-mono text-[10px] leading-6 animate-float-in">
           <AgentTriageSteps activeStep={5} completed showTimes />
         </div>
       )}
@@ -133,57 +133,57 @@ function NormalizedEventCard({ event, spoolEvent, fastPath }) {
   }
 
   return (
-    <div className="mt-3 space-y-4 rounded-xl border border-emerald-500/30 bg-slate-900/75 p-5 backdrop-blur-xl shadow-[0_10px_35px_-10px_rgba(16,185,129,0.2)] transition-all duration-500 ease-out animate-float-in hover:shadow-[0_15px_40px_-8px_rgba(6,182,212,0.25)] hover:-translate-y-1">
+    <div className="mt-3 space-y-4 rounded-xl border border-emerald-500/40 bg-white dark:bg-slate-900/75 p-5 backdrop-blur-xl shadow-md dark:shadow-[0_10px_35px_-10px_rgba(16,185,129,0.2)] transition-all duration-500 ease-out animate-float-in hover:shadow-lg dark:hover:shadow-[0_15px_40px_-8px_rgba(6,182,212,0.25)] hover:-translate-y-1">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="rounded-full border border-cyan-400/30 bg-cyan-400/10 px-2.5 py-1 font-mono text-[10px] text-cyan-300">
+        <span className="rounded-full border border-cyan-500/30 bg-cyan-50 dark:bg-cyan-400/10 px-2.5 py-1 font-mono text-[10px] text-cyan-700 dark:text-cyan-300 font-semibold">
           OCSF Class 4001: Network Activity
         </span>
         {fastPath && (
-          <span className="rounded border border-emerald-400/30 bg-emerald-400/10 px-2 py-1 font-mono text-[10px] text-emerald-300">
+          <span className="rounded border border-emerald-500/30 bg-emerald-50 dark:bg-emerald-400/10 px-2 py-1 font-mono text-[10px] text-emerald-700 dark:text-emerald-300 font-semibold">
             Engine: Deterministic Fast-Path
           </span>
         )}
-        <span className="rounded border border-slate-700 bg-slate-950/60 px-2 py-1 font-mono text-[10px] text-slate-300">
+        <span className="rounded border border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-slate-950/60 px-2 py-1 font-mono text-[10px] text-slate-700 dark:text-slate-300">
           {parserId}
         </span>
         <StatusBadge status={disposition} />
       </div>
 
-      <div className="grid grid-cols-2 gap-3 rounded-lg border border-slate-800/90 bg-slate-950/70 p-4 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 rounded-lg border border-slate-200 dark:border-slate-800/90 bg-slate-50 dark:bg-slate-950/70 p-4 sm:grid-cols-4">
         <EventDatum label="Source endpoint" value={sourceIp} />
         <EventDatum label="Destination endpoint" value={destinationIp} />
         <EventDatum label="Protocol" value={protocol} />
         <EventDatum label="Action" value={action} />
       </div>
 
-      <div className="space-y-3 border-t border-slate-800/80 pt-4 text-[10px]">
+      <div className="space-y-3 border-t border-slate-200 dark:border-slate-800/80 pt-4 text-[10px]">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <span className="text-slate-400">
-            Event ID <strong className="ml-2 font-mono font-medium text-slate-200">{eventId}</strong>
+          <span className="text-slate-500 dark:text-slate-400">
+            Event ID <strong className="ml-2 font-mono font-medium text-slate-800 dark:text-slate-200">{eventId}</strong>
           </span>
-          <span className="flex items-center gap-1.5 text-slate-400">
-            SHA-256 <span className="font-mono text-slate-300">{hash ? `${hash.slice(0, 16)}...` : '—'}</span>
+          <span className="flex items-center gap-1.5 text-slate-500 dark:text-slate-400">
+            SHA-256 <span className="font-mono text-slate-700 dark:text-slate-300">{hash ? `${hash.slice(0, 16)}...` : '—'}</span>
             {hash && (
               <button
-                className="ml-1 text-slate-400 transition hover:text-cyan-300"
+                className="ml-1 text-slate-500 dark:text-slate-400 transition hover:text-cyan-600 dark:hover:text-cyan-300 cursor-pointer"
                 onClick={copyHash}
                 aria-label="Copy SHA-256 hash"
               >
-                {copied ? <Check size={13} className="text-emerald-400" /> : <Copy size={13} />}
+                {copied ? <Check size={13} className="text-emerald-500 dark:text-emerald-400" /> : <Copy size={13} />}
               </button>
             )}
           </span>
         </div>
 
         <button
-          className="font-medium text-cyan-400 transition hover:text-cyan-200 underline decoration-cyan-400/40 underline-offset-4"
+          className="font-medium text-cyan-600 dark:text-cyan-400 transition hover:text-cyan-700 dark:hover:text-cyan-200 underline decoration-cyan-500/40 underline-offset-4 cursor-pointer"
           onClick={() => setRawOpen((open) => !open)}
         >
           {rawOpen ? 'Hide Raw OCSF Payload' : 'View Raw OCSF Payload'}
         </button>
 
         {rawOpen && (
-          <pre className="max-h-64 overflow-auto rounded-lg border border-slate-800/80 bg-slate-950/90 p-3.5 font-mono text-[10px] leading-5 text-slate-300 shadow-inner animate-float-in">
+          <pre className="max-h-64 overflow-auto rounded-lg border border-slate-200 dark:border-slate-800/80 bg-slate-950 p-3.5 font-mono text-[10px] leading-5 text-slate-300 shadow-inner animate-float-in">
             {JSON.stringify(event, null, 2)}
           </pre>
         )}
@@ -195,8 +195,8 @@ function NormalizedEventCard({ event, spoolEvent, fastPath }) {
 function EventDatum({ label, value }) {
   return (
     <div className="min-w-0">
-      <p className="mb-1 text-[9px] uppercase tracking-[.12em] text-slate-500">{label}</p>
-      <strong className="block truncate font-mono text-[11px] text-white">{value}</strong>
+      <p className="mb-1 text-[9px] uppercase tracking-[.12em] text-slate-500 dark:text-slate-400">{label}</p>
+      <strong className="block truncate font-mono text-[11px] text-slate-900 dark:text-white">{value}</strong>
     </div>
   )
 }

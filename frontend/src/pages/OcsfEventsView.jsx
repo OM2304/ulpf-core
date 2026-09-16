@@ -5,24 +5,131 @@ import { CopyButton, EmptyState, ErrorState, LoadingState, PageHeader, StatusBad
 
 export default function OcsfEventsView() {
   const [events, setEvents] = useState([])
-  const [disposition, setDisposition] = useState('')
-  const [search, setSearch] = useState('')
+  const [dispositionFilter, setDispositionFilter] = useState('All')
+  const [searchQuery, setSearchQuery] = useState('')
   const [expanded, setExpanded] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+
   useEffect(() => {
     setLoading(true)
     setError(null)
-    api.events({ limit: 500, disposition: disposition || undefined })
+    api.events({ limit: 500 })
       .then((data) => {
-        console.log("API Response:", data)
-        setEvents(data)
+        setEvents(Array.isArray(data) ? data : [])
       })
       .catch(setError)
       .finally(() => setLoading(false))
-  }, [disposition])
-  const filtered = useMemo(() => { const term = search.toLowerCase().trim(); if (!term) return events; return events.filter((event) => [event.event_id, event.parser_id, event.src_ip, event.dst_ip, event.src_endpoint?.ip, event.dst_endpoint?.ip].some((value) => String(value || '').toLowerCase().includes(term))) }, [events, search])
-  return <><PageHeader eyebrow="Normalized analytical store" title="OCSF events" description="Network activity records normalized into OCSF class 4001." /><div className="panel table-panel"><div className="event-toolbar"><div className="search-box"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search parser, IP, or event ID" /></div><label className="select-box"><Filter size={15} /><select value={disposition} onChange={(event) => setDisposition(event.target.value)}><option value="">All dispositions</option><option value="Allowed">Allowed</option><option value="Blocked">Blocked</option></select></label></div>{error && <ErrorState error={error} />}{loading ? <LoadingState /> : filtered.length === 0 ? <EmptyState label="No events match the current filters" /> : <div className="table-scroll"><table className="events-table"><thead><tr><th></th><th>Event ID</th><th>Parser used</th><th>Source IP</th><th>Dest IP</th><th>Protocol</th><th>Action</th><th>Disposition</th></tr></thead><tbody>{filtered.map((event, index) => <EventRow key={event.event_id || index} event={event} open={expanded === (event.event_id || index)} onToggle={() => setExpanded(expanded === (event.event_id || index) ? null : (event.event_id || index))} />)}</tbody></table></div>}</div></>
+  }, [])
+
+  const filteredEvents = useMemo(() => {
+    const term = searchQuery.toLowerCase().trim()
+
+    return events.filter((event) => {
+      // 1. Disposition filter
+      const eventDisp = (event.disposition || event.action || '').toLowerCase()
+      const matchesDisposition =
+        dispositionFilter === 'All' ||
+        dispositionFilter === '' ||
+        eventDisp === dispositionFilter.toLowerCase()
+
+      if (!matchesDisposition) return false
+
+      // 2. Search query filter
+      if (!term) return true
+
+      const eventIdMatch = String(event.event_id || '').toLowerCase().includes(term)
+      const rawPayloadMatch = String(event.raw_payload || '').toLowerCase().includes(term)
+      const parserIdMatch = String(event.parser_id || event.class_name || '').toLowerCase().includes(term)
+      const srcIpMatch = String(event.src_ip || event.src_endpoint?.ip || '').toLowerCase().includes(term)
+      const dstIpMatch = String(event.dst_ip || event.dst_endpoint?.ip || '').toLowerCase().includes(term)
+      const protocolMatch = String(event.protocol || event.protocol_name || event.connection_info?.protocol_name || '').toLowerCase().includes(term)
+      const jsonMatch = typeof event === 'object' ? JSON.stringify(event).toLowerCase().includes(term) : false
+
+      return (
+        eventIdMatch ||
+        rawPayloadMatch ||
+        parserIdMatch ||
+        srcIpMatch ||
+        dstIpMatch ||
+        protocolMatch ||
+        jsonMatch
+      )
+    })
+  }, [events, searchQuery, dispositionFilter])
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="Normalized analytical store"
+        title="OCSF events"
+        description="Network activity records normalized into OCSF class 4001."
+      />
+      <div className="panel table-panel">
+        <div className="event-toolbar">
+          <div className="search-box">
+            <Search size={16} />
+            <input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search parser, IP, raw payload, or event ID..."
+            />
+          </div>
+          <label className="select-box">
+            <Filter size={15} />
+            <select
+              value={dispositionFilter}
+              onChange={(e) => setDispositionFilter(e.target.value)}
+            >
+              <option value="All">All dispositions</option>
+              <option value="Allowed">Allowed</option>
+              <option value="Blocked">Blocked</option>
+              <option value="Quarantined">Quarantined</option>
+            </select>
+          </label>
+        </div>
+
+        {error && <ErrorState error={error} />}
+
+        {loading ? (
+          <LoadingState />
+        ) : filteredEvents.length === 0 ? (
+          <EmptyState label="No events match the current filters" />
+        ) : (
+          <div className="table-scroll">
+            <table className="events-table">
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>Event ID</th>
+                  <th>Parser used</th>
+                  <th>Source IP</th>
+                  <th>Dest IP</th>
+                  <th>Protocol</th>
+                  <th>Action</th>
+                  <th>Disposition</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredEvents.map((event, index) => (
+                  <EventRow
+                    key={event.event_id || index}
+                    event={event}
+                    open={expanded === (event.event_id || index)}
+                    onToggle={() =>
+                      setExpanded(
+                        expanded === (event.event_id || index) ? null : (event.event_id || index)
+                      )
+                    }
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </>
+  )
 }
 
 function EventRow({ event, open, onToggle }) {

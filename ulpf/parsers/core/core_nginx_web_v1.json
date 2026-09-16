@@ -1,0 +1,12 @@
+{
+  "parser_id": "core_nginx_web_v1",
+  "parser_version": "1.0.0",
+  "description": "WEB",
+  "regex_pattern": "(?i)^(?P<src_ip>\\d+\\.\\d+\\.\\d+\\.\\d+)\\s+-\\s+-\\s+\\[.*?\\]\\s+\"(?P<method>GET|POST|PUT|DELETE|HEAD|OPTIONS)\\s+(?P<url>\\S+)\\s+HTTP.*?\"\\s+(?P<status>\\d{3})",
+  "field_mappings": {
+    "src_ip": "src_ip",
+    "method": "method",
+    "url": "url",
+    "status": "status"
+  }
+}
