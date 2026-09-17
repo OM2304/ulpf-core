@@ -1,3 +1,4 @@
+import hashlib
 import asyncio
 import contextlib
 import json
@@ -10,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from fastapi import FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from aiokafka import AIOKafkaProducer  # <-- NEW: Kafka Import
 
 from ulpf.agent import global_agent_logs
 from ulpf.agent_worker import AgentWorker
@@ -105,6 +107,13 @@ async def lifespan(app: FastAPI):
     app.state.engine = engine
     app.state.worker = worker
 
+    # --- NEW: Initialize Kafka Producer ---
+    kafka_producer = AIOKafkaProducer(bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"))
+    await kafka_producer.start()
+    app.state.kafka_producer = kafka_producer
+    logger.info("Kafka Producer initialized successfully.")
+    # --------------------------------------
+
     try:
         udp_transport = await start_udp_syslog_server(spool, host="0.0.0.0", port=5140)
     except OSError as exc:
@@ -123,6 +132,11 @@ async def lifespan(app: FastAPI):
             await worker_task
         if udp_transport is not None:
             udp_transport.close()
+        
+        # --- NEW: Safely shutdown Kafka Producer ---
+        await kafka_producer.stop()
+        logger.info("Kafka Producer shut down safely.")
+        # -------------------------------------------
 
 
 app = FastAPI(title="ULPF Agentic Daemon", version="1.0.0", lifespan=lifespan)
@@ -151,6 +165,8 @@ def _components(request_app: FastAPI) -> Tuple[DurableSpool, NormalizedStorage, 
 @app.post("/api/v1/ingest", response_model=IngestResponse, status_code=status.HTTP_201_CREATED)
 async def ingest_logs(payload: IngestRequest) -> IngestResponse:
     spool, storage, _, engine, _ = _components(app)
+    kafka_producer: AIOKafkaProducer = app.state.kafka_producer  # <-- NEW: Get Producer
+
     if any(not line.strip() for line in payload.payloads):
         raise HTTPException(status_code=400, detail="payloads must contain non-empty log lines")
     event_ids: List[str] = []
@@ -159,6 +175,24 @@ async def ingest_logs(payload: IngestRequest) -> IngestResponse:
     try:
         for raw_payload in payload.payloads:
             envelope = EventEnvelope(raw_payload=raw_payload, source_transport=payload.transport or "http_api")
+            
+            # --- NEW: Push directly to Kafka 'raw-logs' topic ---
+            try:
+                # Create the hash
+                raw_sha256 = hashlib.sha256(raw_payload.encode('utf-8')).hexdigest()
+
+                # Add it to the Kafka dictionary
+                kafka_msg = {
+                    "event_id": envelope.event_id,
+                    "raw_payload": raw_payload,
+                    "transport": payload.transport or "http_api",
+                    "original_hash": raw_sha256  # <-- Pass it through Kafka!
+                }
+                await kafka_producer.send_and_wait("raw-logs", json.dumps(kafka_msg).encode("utf-8"))
+            except Exception as k_exc:
+                logger.error("Kafka push failed for event %s: %s", envelope.event_id, k_exc)
+            # ----------------------------------------------------
+
             spool.enqueue(envelope)
             matched, parsed_event = engine.parse_and_normalize(envelope)
             if matched and parsed_event.status == EventStatus.COMMITTED:
