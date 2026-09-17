@@ -22,7 +22,6 @@ from ulpf.registry import DynamicParserRegistry
 from ulpf.spool import DurableSpool
 from ulpf.storage import NormalizedStorage
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -96,7 +95,7 @@ async def start_udp_syslog_server(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     spool = DurableSpool("ulpf_spool.db")
-    storage = NormalizedStorage("ulpf_storage.db")
+    storage = NormalizedStorage()  # PostgreSQL DB_Path removed
     registry = DynamicParserRegistry()
     engine = DeterministicEngine(registry=registry)
     worker = AgentWorker(spool=spool, storage=storage, registry=registry, engine=engine)
@@ -164,53 +163,57 @@ def _components(request_app: FastAPI) -> Tuple[DurableSpool, NormalizedStorage, 
 
 @app.post("/api/v1/ingest", response_model=IngestResponse, status_code=status.HTTP_201_CREATED)
 async def ingest_logs(payload: IngestRequest) -> IngestResponse:
-    spool, storage, _, engine, _ = _components(app)
-    kafka_producer: AIOKafkaProducer = app.state.kafka_producer  # <-- NEW: Get Producer
+    """
+    HIGH-THROUGHPUT KAFKA INGESTION:
+    This endpoint ONLY hashes the payload and drops it into the Kafka broker.
+    All parsing, DB writes, and AI triage are deferred to the Consumer Worker.
+    """
+    kafka_producer: AIOKafkaProducer = app.state.kafka_producer
 
     if any(not line.strip() for line in payload.payloads):
         raise HTTPException(status_code=400, detail="payloads must contain non-empty log lines")
+    
     event_ids: List[str] = []
-    fast_path_committed = 0
-    queued_for_ai = 0
+    kafka_tasks = []
+
     try:
         for raw_payload in payload.payloads:
-            envelope = EventEnvelope(raw_payload=raw_payload, source_transport=payload.transport or "http_api")
+            if not raw_payload.strip():
+                continue
+
+            envelope = EventEnvelope(
+                raw_payload=raw_payload,
+                source_transport=payload.transport or "http_api"
+            )
             
-            # --- NEW: Push directly to Kafka 'raw-logs' topic ---
-            try:
-                # Create the hash
-                raw_sha256 = hashlib.sha256(raw_payload.encode('utf-8')).hexdigest()
+            raw_sha256 = hashlib.sha256(raw_payload.encode('utf-8')).hexdigest()
 
-                # Add it to the Kafka dictionary
-                kafka_msg = {
-                    "event_id": envelope.event_id,
-                    "raw_payload": raw_payload,
-                    "transport": payload.transport or "http_api",
-                    "original_hash": raw_sha256  # <-- Pass it through Kafka!
-                }
-                await kafka_producer.send_and_wait("raw-logs", json.dumps(kafka_msg).encode("utf-8"))
-            except Exception as k_exc:
-                logger.error("Kafka push failed for event %s: %s", envelope.event_id, k_exc)
-            # ----------------------------------------------------
+            kafka_msg = {
+                "event_id": envelope.event_id,
+                "raw_payload": raw_payload,
+                "transport": payload.transport or "http_api",
+                "original_hash": raw_sha256
+            }
 
-            spool.enqueue(envelope)
-            matched, parsed_event = engine.parse_and_normalize(envelope)
-            if matched and parsed_event.status == EventStatus.COMMITTED:
-                if not storage.commit_event(parsed_event):
-                    raise RuntimeError("normalized event commit failed")
-                spool.update_status(parsed_event.event_id, EventStatus.COMMITTED, parser_id=parsed_event.parser_id)
-                fast_path_committed += 1
-            else:
-                spool.update_status(envelope.event_id, EventStatus.PENDING_AI)
-                queued_for_ai += 1
+            # Queue the Kafka dispatch concurrently
+            kafka_tasks.append(
+                kafka_producer.send("raw-logs", json.dumps(kafka_msg).encode('utf-8'))
+            )
             event_ids.append(envelope.event_id)
+
+        # Fire all messages to Kafka simultaneously
+        if kafka_tasks:
+            await asyncio.gather(*kafka_tasks)
+
     except Exception as exc:
         logger.exception("Ingestion failed while processing %d payload(s)", len(payload.payloads))
         raise HTTPException(status_code=500, detail=f"ingestion failed: {exc}") from exc
+
+    # Return immediately! 
     return IngestResponse(
         ingested=len(event_ids),
-        fast_path_committed=fast_path_committed,
-        queued_for_ai=queued_for_ai,
+        fast_path_committed=0,
+        queued_for_ai=0,
         event_ids=event_ids,
     )
 
@@ -255,9 +258,17 @@ def _query_spool_counts(db_path: str) -> Dict[str, int]:
     return {str(status_name): int(count) for status_name, count in rows}
 
 
-def _query_storage_count(db_path: str) -> int:
-    with sqlite3.connect(db_path) as conn:
-        return int(conn.execute("SELECT count(*) FROM normalized_events").fetchone()[0])
+# --- REWRITTEN FOR POSTGRES ---
+def _query_storage_count(storage: NormalizedStorage) -> int:
+    try:
+        with storage._get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT count(*) FROM ocsf_ledger")
+                return int(cur.fetchone()[0])
+    except Exception as e:
+        logger.error(f"Postgres count query failed: {e}")
+        return 0
+# ------------------------------
 
 
 @app.get("/api/v1/spool/metrics", response_model=MetricsResponse)
@@ -265,8 +276,8 @@ async def spool_metrics() -> MetricsResponse:
     spool, storage, registry, _, _ = _components(app)
     try:
         spool_counts = _query_spool_counts(spool.db_path)
-        total_ocsf = _query_storage_count(storage.db_path)
-    except sqlite3.Error as exc:
+        total_ocsf = _query_storage_count(storage) # <-- Passed the storage object directly
+    except Exception as exc:
         raise HTTPException(status_code=500, detail=f"metrics query failed: {exc}") from exc
     return MetricsResponse(
         spool_counts=spool_counts,
@@ -300,26 +311,26 @@ async def spool_events(
     except sqlite3.Error as exc:
         raise HTTPException(status_code=500, detail=f"spool query failed: {exc}") from exc
 
-    # Normalized OCSF data is persisted in the analytical database rather than
-    # the durable spool database. Fetch it for the committed spool rows so the
-    # forensic spool view can display both representations of an event.
+    # Normalized OCSF data is now pulled from the PostgreSQL Ledger
     ocsf_by_event_id: Dict[str, Any] = {}
     event_ids = [row["event_id"] for row in rows]
     if event_ids:
-        placeholders = ",".join("?" for _ in event_ids)
+        # Postgres uses %s for parameterized IN queries
+        placeholders = ",".join("%s" for _ in event_ids)
         try:
-            with sqlite3.connect(storage.db_path) as conn:
-                normalized_rows = conn.execute(
-                    f"SELECT event_id, ocsf_json FROM normalized_events WHERE event_id IN ({placeholders})",
-                    event_ids,
-                ).fetchall()
-            for event_id, ocsf_json in normalized_rows:
-                try:
-                    ocsf_by_event_id[event_id] = json.loads(ocsf_json)
-                except (TypeError, json.JSONDecodeError):
-                    logger.warning("Invalid ocsf_json for event %s", event_id)
-        except sqlite3.Error as exc:
-            raise HTTPException(status_code=500, detail=f"normalized event query failed: {exc}") from exc
+            with storage._get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"SELECT event_id, normalized_data FROM ocsf_ledger WHERE event_id IN ({placeholders})",
+                        tuple(event_ids)
+                    )
+                    normalized_rows = cur.fetchall()
+                    
+            for event_id, normalized_data in normalized_rows:
+                # psycopg2 natively maps JSONB to a python dictionary, so no json.loads() is needed
+                ocsf_by_event_id[event_id] = normalized_data if isinstance(normalized_data, dict) else {}
+        except Exception as exc:
+            logger.warning("Postgres normalized event query failed: %s", exc)
 
     return [
         {
@@ -456,7 +467,7 @@ async def list_events(
     _, storage, _, _, _ = _components(app)
     try:
         return storage.list_events(limit=limit, offset=offset, disposition=disposition)
-    except (sqlite3.Error, json.JSONDecodeError) as exc:
+    except Exception as exc: # Catching Postgres/General exceptions
         raise HTTPException(status_code=500, detail=f"event query failed: {exc}") from exc
 
 
@@ -516,5 +527,4 @@ def create_app(coordinator: PipelineCoordinator) -> FastAPI:
 
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run("ulpf.listener:app", host="0.0.0.0", port=8000, reload=False)
