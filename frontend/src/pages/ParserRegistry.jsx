@@ -53,8 +53,8 @@ export default function ParserRegistry() {
         description="Active validated core and AI-synthesized parsers currently available to the normalization engine."
         actions={
           <div className="flex items-center gap-3">
-            <span className="text-xs font-mono text-slate-500 dark:text-gray-400 hidden sm:inline">
-              Core: <strong className="text-cyan-600 dark:text-cyan-400">{coreCount}</strong> | Generated: <strong className="text-amber-600 dark:text-amber-400">{generatedCount}</strong>
+            <span className="text-xs font-mono text-slate-600 dark:text-slate-200 hidden sm:inline">
+              Core: <strong className="text-green-700 dark:text-green-400">{coreCount}</strong> | Generated: <strong className="text-blue-700 dark:text-blue-400">{generatedCount}</strong>
             </span>
             <button
               className="button button-ghost flex items-center gap-2"
@@ -104,21 +104,21 @@ function renderRegexTokens(pattern) {
     if (namedGroup) {
       const varName = namedGroup.replace(/^\(\?P?</, '').replace(/>$/, '')
       parts.push(
-        <span key={key++} className="text-indigo-700 dark:text-indigo-300 font-bold">(?&lt;</span>,
-        <span key={key++} className="text-sky-700 dark:text-sky-400 font-semibold">{varName}</span>,
-        <span key={key++} className="text-indigo-700 dark:text-indigo-300 font-bold">&gt;</span>
+        <span key={key++} className="text-indigo-800 dark:text-indigo-300 font-bold">(?&lt;</span>,
+        <span key={key++} className="text-blue-800 dark:text-sky-400 font-semibold">{varName}</span>,
+        <span key={key++} className="text-indigo-800 dark:text-indigo-300 font-bold">&gt;</span>
       )
     } else if (paren || quantifier) {
       parts.push(
-        <span key={key++} className="text-indigo-700 dark:text-indigo-300 font-bold">{full}</span>
+        <span key={key++} className="text-indigo-800 dark:text-indigo-300 font-bold">{full}</span>
       )
     } else if (charClass) {
       parts.push(
-        <span key={key++} className="text-teal-700 dark:text-teal-400 font-medium">{full}</span>
+        <span key={key++} className="text-teal-800 dark:text-teal-400 font-medium">{full}</span>
       )
     } else {
       parts.push(
-        <span key={key++} className="text-slate-800 dark:text-slate-200">{full}</span>
+        <span key={key++} className="text-slate-900 dark:text-slate-200">{full}</span>
       )
     }
   }
@@ -138,7 +138,7 @@ function ParserCard({ parser, onDelete, isDeleting }) {
       <div>
         <div className="p-4 flex items-center justify-between gap-3 border-b border-slate-200/80 dark:border-slate-800">
           <div className="flex items-center gap-2 min-w-0">
-            <FileCode2 size={17} className="shrink-0 text-cyan-600 dark:text-cyan-400" />
+            <FileCode2 size={17} className="shrink-0 text-teal-700 dark:text-cyan-400" />
             <strong className="truncate font-mono text-xs text-slate-800 dark:text-gray-100" title={parser.parser_id}>
               {parser.parser_id}
             </strong>
@@ -146,12 +146,12 @@ function ParserCard({ parser, onDelete, isDeleting }) {
 
           <div className="flex items-center gap-2 shrink-0">
             {isGenerated ? (
-              <span className="origin-badge bg-amber-100 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-800/80 text-amber-800 dark:text-amber-300 flex items-center gap-1 font-semibold">
+              <span className="origin-badge bg-blue-100 text-blue-800 border border-blue-300 dark:bg-blue-900/40 dark:text-blue-400 dark:border-blue-800 flex items-center gap-1 font-semibold">
                 <Sparkles size={11} />
                 generated
               </span>
             ) : (
-              <span className="origin-badge bg-cyan-100 dark:bg-cyan-950/60 border border-cyan-300 dark:border-cyan-800/80 text-cyan-800 dark:text-cyan-300 flex items-center gap-1 font-semibold">
+              <span className="origin-badge bg-green-100 text-green-800 border border-green-300 dark:bg-green-900/40 dark:text-green-400 dark:border-green-800 flex items-center gap-1 font-semibold">
                 <Shield size={11} />
                 core (read-only)
               </span>
@@ -174,15 +174,15 @@ function ParserCard({ parser, onDelete, isDeleting }) {
 
         {/* Description */}
         <div className="px-4 pt-3 pb-1">
-          <p className="text-xs text-slate-600 dark:text-gray-400 leading-relaxed font-sans">
+          <p className="text-xs text-slate-600 dark:text-slate-200 leading-relaxed font-sans">
             {parser.description || 'No description provided.'}
           </p>
         </div>
 
         {/* Regex Pattern Block */}
         <div className="mx-4 my-3 p-3 rounded-md border bg-slate-50 border-slate-200 text-slate-800 dark:bg-slate-950/60 dark:border-slate-800 dark:text-slate-200">
-          <div className="flex items-center gap-1.5 text-[10px] uppercase font-bold tracking-wider mb-2 text-slate-500 dark:text-slate-400 font-mono">
-            <Braces size={13} className="text-cyan-600 dark:text-cyan-400" /> regex pattern
+          <div className="flex items-center gap-1.5 text-[10px] uppercase font-bold tracking-wider mb-2 text-slate-600 dark:text-slate-200 font-mono">
+            <Braces size={13} className="text-teal-700 dark:text-cyan-400" /> regex pattern
           </div>
           <code className="block font-mono text-[11px] leading-relaxed break-all">
             {renderRegexTokens(parser.regex_pattern)}
@@ -193,15 +193,15 @@ function ParserCard({ parser, onDelete, isDeleting }) {
       {/* Field Mappings Block */}
       {parser.field_mappings && Object.keys(parser.field_mappings).length > 0 && (
         <div className="mx-4 mb-4 p-3 rounded-md border bg-slate-50 border-slate-200 text-slate-800 dark:bg-slate-950/60 dark:border-slate-800 dark:text-slate-200">
-          <p className="text-[10px] uppercase font-bold tracking-wider mb-2 text-slate-500 dark:text-slate-400 font-mono">
+          <p className="text-[10px] uppercase font-bold tracking-wider mb-2 text-slate-600 dark:text-slate-200 font-mono">
             field mappings
           </p>
           <div className="space-y-1 font-mono text-[11px]">
             {Object.entries(parser.field_mappings).map(([key, value]) => (
-              <div className="flex items-center justify-between gap-2 py-0.5 text-slate-600 dark:text-slate-300" key={key}>
-                <span className="text-sky-700 dark:text-sky-400 font-medium">{key}</span>
-                <i className="text-slate-400 not-italic">→</i>
-                <strong className="text-teal-700 dark:text-teal-400 font-semibold">{value}</strong>
+              <div className="flex items-center justify-between gap-2 py-0.5 text-slate-700 dark:text-slate-200" key={key}>
+                <span className="text-blue-800 dark:text-sky-400 font-semibold">{key}</span>
+                <i className="text-slate-500 dark:text-slate-300 not-italic">→</i>
+                <strong className="text-teal-800 dark:text-teal-400 font-semibold">{value}</strong>
               </div>
             ))}
           </div>

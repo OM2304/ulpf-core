@@ -265,13 +265,13 @@ export default function TelemetryDashboard() {
           </div>
           <div className="mt-3">
             {initialLoad ? (
-              <div className="h-8 w-24 bg-slate-200 dark:bg-gray-800 animate-pulse rounded" />
+              <div className="h-11 w-32 bg-slate-200 dark:bg-gray-800 animate-pulse rounded" />
             ) : (
-              <span className="text-3xl font-extrabold font-mono text-emerald-600 dark:text-emerald-400 tracking-tight">
+              <span className="text-4xl sm:text-5xl font-bold font-mono text-emerald-600 dark:text-emerald-400 tracking-tight">
                 {committedCount.toLocaleString()}
               </span>
             )}
-            <p className="text-[11px] text-slate-500 dark:text-gray-500 mt-1 font-mono">
+            <p className="text-sm text-slate-600 dark:text-slate-300 mt-1.5 font-mono">
               Deterministic OCSF committed events
             </p>
           </div>
@@ -290,13 +290,13 @@ export default function TelemetryDashboard() {
           </div>
           <div className="mt-3">
             {initialLoad ? (
-              <div className="h-8 w-24 bg-slate-200 dark:bg-gray-800 animate-pulse rounded" />
+              <div className="h-11 w-32 bg-slate-200 dark:bg-gray-800 animate-pulse rounded" />
             ) : (
-              <span className="text-3xl font-extrabold font-mono text-amber-600 dark:text-amber-400 tracking-tight">
+              <span className="text-4xl sm:text-5xl font-bold font-mono text-amber-600 dark:text-amber-400 tracking-tight">
                 {pendingAiCount.toLocaleString()}
               </span>
             )}
-            <p className="text-[11px] text-slate-500 dark:text-gray-500 mt-1 font-mono">
+            <p className="text-sm text-slate-600 dark:text-slate-300 mt-1.5 font-mono">
               Queued for RAG agentic synthesis
             </p>
           </div>
@@ -315,13 +315,13 @@ export default function TelemetryDashboard() {
           </div>
           <div className="mt-3">
             {initialLoad ? (
-              <div className="h-8 w-24 bg-slate-200 dark:bg-gray-800 animate-pulse rounded" />
+              <div className="h-11 w-32 bg-slate-200 dark:bg-gray-800 animate-pulse rounded" />
             ) : (
-              <span className="text-3xl font-extrabold font-mono text-rose-600 dark:text-rose-400 tracking-tight">
+              <span className="text-4xl sm:text-5xl font-bold font-mono text-rose-600 dark:text-rose-400 tracking-tight">
                 {quarantinedCount.toLocaleString()}
               </span>
             )}
-            <p className="text-[11px] text-slate-500 dark:text-gray-500 mt-1 font-mono">
+            <p className="text-sm text-slate-600 dark:text-slate-300 mt-1.5 font-mono">
               Poison pill / unparseable logs isolated
             </p>
           </div>
@@ -340,13 +340,13 @@ export default function TelemetryDashboard() {
           </div>
           <div className="mt-3">
             {initialLoad ? (
-              <div className="h-8 w-24 bg-slate-200 dark:bg-gray-800 animate-pulse rounded" />
+              <div className="h-11 w-32 bg-slate-200 dark:bg-gray-800 animate-pulse rounded" />
             ) : (
-              <span className="text-3xl font-extrabold font-mono text-cyan-600 dark:text-cyan-400 tracking-tight">
+              <span className="text-4xl sm:text-5xl font-bold font-mono text-cyan-600 dark:text-cyan-400 tracking-tight">
                 {totalSpooled.toLocaleString()}
               </span>
             )}
-            <p className="text-[11px] text-slate-500 dark:text-gray-500 mt-1 font-mono">
+            <p className="text-sm text-slate-600 dark:text-slate-300 mt-1.5 font-mono">
               Disk WAL envelope records total
             </p>
           </div>
@@ -365,7 +365,7 @@ export default function TelemetryDashboard() {
                 Log Path Ingestion Pump
               </h2>
             </div>
-            <p className="text-xs text-slate-600 dark:text-gray-400 mb-4">
+            <p className="text-sm text-slate-600 dark:text-slate-300 mb-4 leading-relaxed">
               Paste an absolute log file path on your local file system to stream lines directly through the high-throughput parser and spool engine.
             </p>
 
@@ -703,11 +703,11 @@ export default function TelemetryDashboard() {
                           </span>
                         )}
                       </td>
-                      <td className="py-3 px-4">
+                      <td className="py-3 px-4 text-slate-700 dark:text-slate-200">
                         {ev.parser_id ? (
-                          <span className="font-mono text-slate-800 dark:text-amber-300 font-semibold">{ev.parser_id}</span>
+                          <span className="font-mono text-slate-700 dark:text-slate-200 font-semibold">{ev.parser_id}</span>
                         ) : (
-                          <span className="text-slate-600 dark:text-slate-400 font-medium italic">Unassigned (Pending AI)</span>
+                          <span className="text-slate-500 dark:text-slate-400 font-medium italic">Unassigned (Pending AI)</span>
                         )}
                       </td>
                       <td className="py-3 px-4">

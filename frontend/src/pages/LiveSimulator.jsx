@@ -338,6 +338,7 @@ export default function LiveSimulator() {
             onChange={(event) => setPayload(event.target.value)}
             placeholder="src=10.0.0.1 dst=8.8.8.8 spt=1234 dpt=53 proto=UDP action=ALLOW"
             spellCheck="false"
+            className="text-[#333333] dark:text-[var(--color-text-primary)]"
           />
 
           <div className="form-footer">

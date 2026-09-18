@@ -23,9 +23,11 @@ function ThemeToggle() {
   useEffect(() => {
     if (isDark) {
       document.documentElement.classList.add('dark')
+      document.documentElement.classList.remove('light-mode')
       localStorage.setItem('ulpf-theme', 'dark')
     } else {
       document.documentElement.classList.remove('dark')
+      document.documentElement.classList.add('light-mode')
       localStorage.setItem('ulpf-theme', 'light')
     }
   }, [isDark])
