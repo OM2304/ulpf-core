@@ -306,16 +306,20 @@ Return ONLY a valid JSON object with this exact structure:
             raw_response = self.llm_caller(current_prompt)
             data = self._extract_json(raw_response)
 
-            if not data or "fields" not in data:
+            if not data or ("fields" not in data and "regex_pattern" not in data):
                 last_failed_pattern = raw_response[:80]
                 error_msg = "Output was not valid JSON format or missing the 'fields' list."
                 rprint(f"    [yellow]⚠ Attempt {attempt} JSON decode error:[/yellow] Triggering self-reflection retry...")
                 current_prompt = self.build_reflection_prompt(sample_logs, last_failed_pattern, error_msg, rag_contexts, category)
                 continue
 
-            # NEW: Let Python Build the Regex safely instead of the LLM
-            fields_plan = data.get("fields", [])
-            regex_pattern, field_mappings = self._compile_parsing_plan(sample_logs[0], fields_plan)
+            # Support both AST field plan and direct regex format
+            if "fields" in data:
+                fields_plan = data.get("fields", [])
+                regex_pattern, field_mappings = self._compile_parsing_plan(sample_logs[0], fields_plan)
+            else:
+                regex_pattern = data.get("regex_pattern", "")
+                field_mappings = data.get("field_mappings", {})
             
             rprint(f"    [dim]Compiled Pattern:[/dim] [italic]{regex_pattern}[/italic]")
 

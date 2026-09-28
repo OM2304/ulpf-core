@@ -48,6 +48,7 @@ export const api = {
     method: 'DELETE',
   }),
   triage: () => request('/api/v1/triage/trigger', { method: 'POST' }),
+  sourceDistribution: () => request('/api/v1/metrics/sources'),
 }
 
 export { API_BASE }

@@ -1,7 +1,6 @@
-import { Route, Routes } from 'react-router-dom'
+import { Navigate, Route, Routes } from 'react-router-dom'
 import Layout from './components/Layout'
 import TelemetryDashboard from './pages/TelemetryDashboard'
-import DashboardOverview from './pages/DashboardOverview'
 import LiveSimulator from './pages/LiveSimulator'
 import DurableSpoolView from './pages/DurableSpoolView'
 import ParserRegistry from './pages/ParserRegistry'
@@ -12,11 +11,12 @@ export default function App() {
     <Layout>
       <Routes>
         <Route path="/" element={<TelemetryDashboard />} />
-        <Route path="/overview" element={<DashboardOverview />} />
-        <Route path="/ingest" element={<LiveSimulator />} />
+        <Route path="/data-ingestion" element={<LiveSimulator />} />
+        <Route path="/ingest" element={<Navigate to="/data-ingestion" replace />} />
         <Route path="/spool" element={<DurableSpoolView />} />
         <Route path="/registry" element={<ParserRegistry />} />
         <Route path="/events" element={<OcsfEventsView />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>
   )

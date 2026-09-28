@@ -8,7 +8,11 @@ import {
   Circle,
   Copy,
   FileInput,
+  FileText,
+  FolderInput,
   Loader2,
+  Play,
+  RefreshCw,
   Sparkles,
   TerminalSquare,
   TriangleAlert,
@@ -213,6 +217,11 @@ export default function LiveSimulator() {
   const [error, setError] = useState(null)
   const [submitting, setSubmitting] = useState(false)
 
+  // --- Path Ingestion State ---
+  const [inputPath, setInputPath] = useState('C:\\Users\\ombat\\ULPF\\chaos_stream.log')
+  const [ingestingPath, setIngestingPath] = useState(false)
+  const [ingestPathStatus, setIngestPathStatus] = useState(null)
+
   useEffect(() => {
     if (status !== 'processing' || !result?.event_ids?.[0]) return undefined
     let cancelled = false
@@ -292,6 +301,32 @@ export default function LiveSimulator() {
     }
   }
 
+  // --- Handle Path Ingestion Submit ---
+  const handleIngestPath = async (e) => {
+    if (e) e.preventDefault()
+    const target = inputPath.trim()
+    if (!target) return
+
+    setIngestingPath(true)
+    setIngestPathStatus(null)
+
+    try {
+      const res = await api.ingestPath(target)
+      setIngestPathStatus({ type: 'success', text: `Successfully ingested ${res.total_ingested} logs from ${res.path}` })
+      setInputPath('')
+    } catch (err) {
+      const errMsg = err.message || 'Ingestion failed'
+      setIngestPathStatus({ type: 'error', text: errMsg })
+    } finally {
+      setIngestingPath(false)
+    }
+  }
+
+  const handleQuickPathSelect = (filename) => {
+    const fullPath = `C:\\Users\\ombat\\ULPF\\${filename}`
+    setInputPath(fullPath)
+  }
+
   const showResults = status !== 'idle' && result
 
   return (
@@ -313,93 +348,181 @@ export default function LiveSimulator() {
       `}</style>
 
       <PageHeader
-        eyebrow="Ingestion layer"
-        title="Live simulator"
-        description="Send raw firewall and system logs through the production ingestion path."
+        eyebrow="Data Ingestion Layer"
+        title="Data Ingestion"
+        description="Stream raw firewall, network, and system logs through the high-throughput parser and durable spooling pipeline."
       />
       {error && <ErrorState error={error} />}
 
-      <div className="ingest-grid">
-        <form className="panel ingest-form" onSubmit={submit}>
-          <div className="panel-heading">
-            <div>
-              <p className="eyebrow">HTTP API / http_api</p>
-              <h2>Submit payload</h2>
-            </div>
-            <FileInput size={20} className="heading-icon" />
-          </div>
+      <div className="space-y-6">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          {/* Left Column: Two Ingestion Modes (7 cols) */}
+          <div className="lg:col-span-7 space-y-6">
+            {/* 1. Direct Payload Submit Form */}
+            <form className="panel ingest-form" onSubmit={submit}>
+              <div className="panel-heading">
+                <div>
+                  <p className="eyebrow">HTTP API / Manual Stream</p>
+                  <h2>Submit raw log line</h2>
+                </div>
+                <FileInput size={20} className="heading-icon" />
+              </div>
 
-          <label className="field-label" htmlFor="raw-log">
-            Raw log line
-          </label>
-          <textarea
-            id="raw-log"
-            value={payload}
-            onChange={(event) => setPayload(event.target.value)}
-            placeholder="src=10.0.0.1 dst=8.8.8.8 spt=1234 dpt=53 proto=UDP action=ALLOW"
-            spellCheck="false"
-            className="text-[#333333] dark:text-[var(--color-text-primary)]"
-          />
+              <label className="field-label" htmlFor="raw-log">
+                Raw log payload
+              </label>
+              <textarea
+                id="raw-log"
+                value={payload}
+                onChange={(event) => setPayload(event.target.value)}
+                placeholder="src=10.0.0.1 dst=8.8.8.8 spt=1234 dpt=53 proto=UDP action=ALLOW"
+                spellCheck="false"
+                className="text-[#333333] dark:text-[var(--color-text-primary)]"
+              />
 
-          <div className="form-footer">
-            <span className="character-count">{payload.length} characters</span>
-            <button
-              className="button button-primary"
-              type="submit"
-              disabled={submitting || !payload.trim()}
-            >
-              {submitting ? 'Submitting...' : 'Submit payload'}
-              <ArrowUpRight size={16} />
-            </button>
-          </div>
-        </form>
+              <div className="form-footer">
+                <span className="character-count">{payload.length} characters</span>
+                <button
+                  className="button button-primary"
+                  type="submit"
+                  disabled={submitting || !payload.trim()}
+                >
+                  {submitting ? 'Submitting...' : 'Submit payload'}
+                  <ArrowUpRight size={16} />
+                </button>
+              </div>
+            </form>
 
-        <div className="panel processing-panel">
-          <div className="panel-heading">
-            <div>
-              <p className="eyebrow">Response channel</p>
-              <h2>Processing results</h2>
-            </div>
-            <TerminalSquare size={20} className="heading-icon" />
-          </div>
-
-          {!showResults ? (
-            <div className="awaiting">
-              <span className="awaiting-icon">
-                <TriangleAlert size={18} />
-              </span>
-              <p>
-                {status === 'error'
-                  ? 'The ingestion request could not be completed.'
-                  : 'Results will appear here after the payload is accepted.'}
+            {/* 2. File Path Ingestion Pump */}
+            <div className="panel p-6 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-sm rounded-lg">
+              <div className="flex items-center gap-2 mb-3">
+                <FolderInput size={18} className="text-cyan-600 dark:text-cyan-400" />
+                <h2 className="text-sm font-semibold text-slate-800 dark:text-gray-200 uppercase tracking-wider font-mono">
+                  Log Path Ingestion Pump
+                </h2>
+              </div>
+              <p className="text-sm text-slate-600 dark:text-slate-300 mb-4 leading-relaxed">
+                Paste an absolute log file path on your local file system to stream lines directly through the high-throughput parser and spool engine.
               </p>
-            </div>
-          ) : (
-            <div className="result-stack">
-              {status === 'processing' && <AgentTriageConsole activeStep={activeStep} />}
-              {status === 'completed' && !fastPath && (
-                <ExecutionTrace
-                  isOpen={isTraceOpen}
-                  onToggle={() => setIsTraceOpen((open) => !open)}
-                />
-              )}
-              {status === 'completed' && (
-                <NormalizedEventCard
-                  event={normalizedEvent}
-                  spoolEvent={rawSpoolEvent}
-                  fastPath={fastPath}
-                />
-              )}
-              {status === 'processing' && (
-                <div className="ingest-summary animate-float-in">
-                  <span>
-                    Ingested <strong>{result.ingested}</strong>
-                  </span>
-                  <span className="mono">{result.event_ids?.[0] || '—'}</span>
+
+              <form onSubmit={handleIngestPath} className="space-y-4">
+                <div>
+                  <label className="block text-[11px] font-mono text-slate-500 dark:text-gray-400 uppercase mb-1">
+                    Absolute File Path
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={inputPath}
+                      onChange={(e) => setInputPath(e.target.value)}
+                      placeholder="e.g. C:\Users\ombat\ULPF\chaos_stream.log"
+                      className="w-full rounded px-3 py-2.5 text-xs font-mono pr-10 border transition-colors focus:outline-none bg-slate-50 text-slate-900 border-slate-300 placeholder-slate-400 focus:ring-sky-500 focus:border-sky-500 dark:bg-slate-950/80 dark:text-slate-100 dark:border-slate-700 dark:placeholder-slate-500"
+                    />
+                    <FileText size={16} className="absolute right-3 top-3 text-slate-400 dark:text-gray-500 pointer-events-none" />
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-mono text-slate-500 dark:text-gray-500 uppercase">Quick Path:</span>
+                  <button
+                    type="button"
+                    onClick={() => handleQuickPathSelect('chaos_stream.log')}
+                    className="px-2 py-1 text-[10px] font-mono rounded transition-colors cursor-pointer bg-slate-100 text-slate-700 border border-slate-200 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700 dark:hover:bg-slate-700"
+                  >
+                    chaos_stream.log
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleQuickPathSelect('sample_logs.txt')}
+                    className="px-2 py-1 text-[10px] font-mono rounded transition-colors cursor-pointer bg-slate-100 text-slate-700 border border-slate-200 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700 dark:hover:bg-slate-700"
+                  >
+                    sample_logs.txt
+                  </button>
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={ingestingPath || !inputPath.trim()}
+                  className="w-full py-2.5 px-4 rounded-md font-medium text-sm bg-slate-900 text-white hover:bg-slate-800 transition-colors shadow-sm dark:bg-sky-500 dark:text-slate-950 dark:hover:bg-sky-400 dark:font-semibold flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {ingestingPath ? (
+                    <>
+                      <RefreshCw size={15} className="animate-spin" />
+                      <span>Pumping Logs from File...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Play size={15} fill="currentColor" />
+                      <span>Stream File Logs via HTTP</span>
+                    </>
+                  )}
+                </button>
+              </form>
+
+              {ingestPathStatus && (
+                <div
+                  className={`mt-4 p-3 rounded text-xs font-mono border ${
+                    ingestPathStatus.type === 'success'
+                      ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300'
+                      : 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-300'
+                  }`}
+                >
+                  {ingestPathStatus.text}
                 </div>
               )}
             </div>
-          )}
+          </div>
+
+          {/* Right Column: Processing Response & Trace (5 cols) */}
+          <div className="lg:col-span-5">
+            <div className="panel processing-panel h-full flex flex-col justify-start">
+              <div className="panel-heading mb-4">
+                <div>
+                  <p className="eyebrow">Response channel</p>
+                  <h2>Processing results</h2>
+                </div>
+                <TerminalSquare size={20} className="heading-icon" />
+              </div>
+
+              {!showResults ? (
+                <div className="awaiting my-auto py-12">
+                  <span className="awaiting-icon">
+                    <TriangleAlert size={18} />
+                  </span>
+                  <p>
+                    {status === 'error'
+                      ? 'The ingestion request could not be completed.'
+                      : 'Results will appear here after a raw payload is submitted.'}
+                  </p>
+                </div>
+              ) : (
+                <div className="result-stack mt-0">
+                  {status === 'processing' && <AgentTriageConsole activeStep={activeStep} />}
+                  {status === 'completed' && !fastPath && (
+                    <ExecutionTrace
+                      isOpen={isTraceOpen}
+                      onToggle={() => setIsTraceOpen((open) => !open)}
+                    />
+                  )}
+                  {status === 'completed' && (
+                    <NormalizedEventCard
+                      event={normalizedEvent}
+                      spoolEvent={rawSpoolEvent}
+                      fastPath={fastPath}
+                    />
+                  )}
+                  {status === 'processing' && (
+                    <div className="ingest-summary animate-float-in mt-4">
+                      <span>
+                        Ingested <strong>{result.ingested}</strong>
+                      </span>
+                      <span className="mono">{result.event_ids?.[0] || '—'}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       </div>
     </>

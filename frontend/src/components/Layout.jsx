@@ -5,8 +5,7 @@ import { API_BASE } from '../services/api'
 
 const navItems = [
   { to: '/', label: 'Telemetry', icon: Activity, end: true },
-  { to: '/overview', label: 'Pipeline Overview', icon: Server },
-  { to: '/ingest', label: 'Live Ingest', icon: Radio },
+  { to: '/data-ingestion', label: 'Data Ingestion', icon: Radio },
   { to: '/spool', label: 'Durable Spool', icon: Database },
   { to: '/registry', label: 'Parser Registry', icon: FileCode2 },
   { to: '/events', label: 'OCSF Events', icon: Boxes },

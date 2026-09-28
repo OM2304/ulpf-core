@@ -47,6 +47,7 @@ class MetricsResponse(BaseModel):
     total_spooled: int
     total_ocsf_committed: int
     active_parsers_count: int
+    source_distribution: Dict[str, int] = Field(default_factory=dict)
 
 
 class TriggerTriageResponse(BaseModel):
@@ -286,7 +287,8 @@ async def spool_metrics() -> MetricsResponse:
     spool, storage, registry, _, _ = _components(app)
     try:
         spool_counts = _query_spool_counts(spool.db_path)
-        total_ocsf = _query_storage_count(storage) # <-- Passed the storage object directly
+        total_ocsf = _query_storage_count(storage)
+        source_dist = storage.get_source_distribution() if hasattr(storage, "get_source_distribution") else {}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"metrics query failed: {exc}") from exc
     return MetricsResponse(
@@ -294,7 +296,18 @@ async def spool_metrics() -> MetricsResponse:
         total_spooled=sum(spool_counts.values()),
         total_ocsf_committed=total_ocsf,
         active_parsers_count=len(registry.list_parsers()),
+        source_distribution=source_dist,
     )
+
+
+@app.get("/api/v1/metrics/sources")
+async def get_source_distribution() -> Dict[str, Any]:
+    _, storage, _, _, _ = _components(app)
+    try:
+        dist = storage.get_source_distribution() if hasattr(storage, "get_source_distribution") else {}
+        return {"distribution": dist}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"source distribution query failed: {exc}") from exc
 
 
 @app.get("/api/v1/spool/events")

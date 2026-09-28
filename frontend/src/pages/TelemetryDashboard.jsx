@@ -1,17 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   Activity,
+  BrainCircuit,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
   Database,
-  FileText,
-  FolderInput,
+  FileCode2,
   Maximize2,
   Minimize2,
-  Play,
+  PieChart as PieIcon,
   RefreshCw,
-  Search,
   ShieldAlert,
   Sparkles,
   Terminal,
@@ -19,14 +18,81 @@ import {
 } from 'lucide-react'
 import {
   CartesianGrid,
+  Cell,
   Line,
   LineChart,
+  Pie,
+  PieChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
-  YAxis
+  YAxis,
 } from 'recharts'
 import { api } from '../services/api'
+
+const PARSER_FRIENDLY_NAMES = {
+  core_apache_web_v1: 'Apache Web',
+  core_nginx_web_v1: 'Nginx Web',
+  core_pam_auth_v1: 'Linux PAM Auth',
+  core_iptables_net_v1: 'IPtables Net',
+  core_aws_vpc_v1: 'AWS VPC Flow',
+  core_cisco_asa_v1: 'Cisco ASA FW',
+  builtin_firewall_kv_v1: 'Firewall KV',
+}
+
+function formatParserName(id) {
+  if (!id || id === 'unassigned') return 'Unassigned'
+  if (PARSER_FRIENDLY_NAMES[id]) return PARSER_FRIENDLY_NAMES[id]
+  return id
+    .replace(/^core_|^ai_/, '')
+    .replace(/_v\d+$/, '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
+const PIE_COLORS = [
+  '#06b6d4', // Cyan
+  '#10b981', // Emerald
+  '#f59e0b', // Amber
+  '#8b5cf6', // Violet
+  '#ec4899', // Pink
+  '#3b82f6', // Blue
+  '#14b8a6', // Teal
+  '#f97316', // Orange
+]
+
+const CustomPieTooltip = ({ active, payload }) => {
+  if (active && payload && payload.length) {
+    const data = payload[0]
+    return (
+      <div className="bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 text-[11px] font-mono text-white shadow-lg">
+        <span className="font-semibold text-cyan-400">{data.name}</span>: {data.value} records
+      </div>
+    )
+  }
+  return null
+}
+
+function DistributionRow({ label, value, total, colorClass, barColorClass }) {
+  const percentage = total ? Math.round((value / total) * 100) : 0
+  return (
+    <div className="space-y-1.5">
+      <div className="flex justify-between items-center text-xs font-mono">
+        <span className="text-slate-600 dark:text-slate-400 font-medium">{label}</span>
+        <div className="flex items-center gap-2">
+          <strong className="text-slate-900 dark:text-slate-100 font-bold">{value.toLocaleString()}</strong>
+          <span className="text-slate-400 dark:text-slate-500 text-[10px]">({percentage}%)</span>
+        </div>
+      </div>
+      <div className="h-2 w-full bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+        <div
+          className={`h-full transition-all duration-500 rounded-full ${barColorClass}`}
+          style={{ width: `${percentage}%` }}
+        />
+      </div>
+    </div>
+  )
+}
 
 export default function TelemetryDashboard() {
   // --- Telemetry Metrics State ---
@@ -37,13 +103,12 @@ export default function TelemetryDashboard() {
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [metricsError, setMetricsError] = useState(null)
 
+  // --- AI Triage State ---
+  const [triaging, setTriaging] = useState(false)
+  const [triageResult, setTriageResult] = useState(null)
+
   // --- Chart Historical Data State ---
   const [chartData, setChartData] = useState([])
-
-  // --- Path Ingestion State ---
-  const [inputPath, setInputPath] = useState('C:\\Users\\ombat\\ULPF\\chaos_stream.log')
-  const [ingesting, setIngesting] = useState(false)
-  const [ingestStatus, setIngestStatus] = useState(null)
 
   // --- Terminal Console State ---
   const [terminalLogs, setTerminalLogs] = useState([
@@ -66,12 +131,6 @@ export default function TelemetryDashboard() {
   const [isTerminalFullscreen, setIsTerminalFullscreen] = useState(false)
   const terminalContainerRef = useRef(null)
   const terminalWasAtBottomRef = useRef(true)
-
-  // --- Event Stream Table State ---
-  const [events, setEvents] = useState([])
-  const [expandedEventId, setExpandedEventId] = useState(null)
-  const [statusFilter, setStatusFilter] = useState('ALL')
-  const [searchTerm, setSearchTerm] = useState('')
 
   // --- Auto-scroll Terminal internally without window hijacking ---
   useEffect(() => {
@@ -97,8 +156,8 @@ export default function TelemetryDashboard() {
     ])
   }
 
-  // --- Poll Metrics, Events & Console Logs ---
-  const fetchMetricsAndEvents = async () => {
+  // --- Poll Metrics & Console Logs ---
+  const fetchMetricsAndLogs = async () => {
     try {
       const mData = await api.metrics()
       setMetrics(mData)
@@ -130,13 +189,6 @@ export default function TelemetryDashboard() {
     }
 
     try {
-      const eData = await api.getSpoolEvents(50)
-      setEvents(eData)
-    } catch (err) {
-      // Non-blocking error for table stream
-    }
-
-    try {
       const cData = await api.getConsoleLogs()
       if (cData && Array.isArray(cData.logs)) {
         setBackendLogs(cData.logs)
@@ -147,43 +199,35 @@ export default function TelemetryDashboard() {
   }
 
   useEffect(() => {
-    fetchMetricsAndEvents()
-    const interval = setInterval(fetchMetricsAndEvents, 2500)
+    fetchMetricsAndLogs()
+    const interval = setInterval(fetchMetricsAndLogs, 2500)
     return () => clearInterval(interval)
   }, [prevTotalSpooled])
 
-  // --- Handle Path Ingestion Submit ---
-  const handleIngestPath = async (e) => {
-    if (e) e.preventDefault()
-    const target = inputPath.trim()
-    if (!target) return
-
-    setIngesting(true)
-    setIngestStatus(null)
-    logToTerminal('info', `[INGEST_REQUEST] Triggering path pump for: ${target}`)
-
+  // --- Trigger AI Triage Handler ---
+  const handleTriggerTriage = async () => {
+    setTriaging(true)
+    setTriageResult(null)
+    logToTerminal('info', '[TRIAGE_TRIGGER] Manual autonomous triage execution requested.')
     try {
-      const res = await api.ingestPath(target)
-      setIngestStatus({ type: 'success', text: `Successfully ingested ${res.total_ingested} logs from ${res.path}` })
-      logToTerminal('success', `[INGEST_SUCCESS] Total Ingested: ${res.total_ingested} lines from file`, res)
-      setInputPath('') // Clear input field upon successful ingestion
-      // Immediately refresh telemetry
-      fetchMetricsAndEvents()
+      const result = await api.triage()
+      setTriageResult(result)
+      logToTerminal('success', `[TRIAGE_COMPLETE] Clusters: ${result.clusters_detected}, Parsers: ${result.onboarded_parsers}, Committed: ${result.committed}`)
+      await fetchMetricsAndLogs()
     } catch (err) {
-      const errMsg = err.message || 'Ingestion failed'
-      setIngestStatus({ type: 'error', text: errMsg })
-      logToTerminal('error', `[INGEST_ERROR] ${errMsg}`)
+      const msg = err.message || 'Triage failed'
+      logToTerminal('error', `[TRIAGE_ERROR] ${msg}`)
     } finally {
-      setIngesting(false)
+      setTriaging(false)
     }
   }
 
   // --- Manual Refresh Handler ---
   const handleManualRefresh = async () => {
     setIsRefreshing(true)
-    logToTerminal('info', '[REFRESH] Manually triggering telemetry metrics & event fetch...')
+    logToTerminal('info', '[REFRESH] Manually triggering telemetry metrics fetch...')
     try {
-      await fetchMetricsAndEvents()
+      await fetchMetricsAndLogs()
     } catch (err) {
       logToTerminal('error', `[REFRESH_ERROR] ${err.message || 'Refresh failed'}`)
     } finally {
@@ -191,35 +235,25 @@ export default function TelemetryDashboard() {
     }
   }
 
-  // --- Quick Path Select Handler ---
-  const handleQuickPathSelect = (filename) => {
-    const fullPath = `C:\\Users\\ombat\\ULPF\\${filename}`
-    setInputPath(fullPath)
-    logToTerminal('info', `[QUICK_PATH] Selected preset log file path: ${fullPath}`)
-  }
-
-  // --- Filtered Events for Table ---
-  const filteredEvents = events.filter((ev) => {
-    const matchesFilter =
-      statusFilter === 'ALL' ||
-      (statusFilter === 'COMMITTED' && ev.status === 'COMMITTED') ||
-      (statusFilter === 'PENDING_AI' && ev.status === 'PENDING_AI') ||
-      (statusFilter === 'QUARANTINED' && ev.status === 'QUARANTINED')
-    const searchLower = searchTerm.toLowerCase()
-    const matchesSearch =
-      !searchTerm ||
-      (ev.event_id && ev.event_id.toLowerCase().includes(searchLower)) ||
-      (ev.raw_payload && ev.raw_payload.toLowerCase().includes(searchLower)) ||
-      (ev.parser_id && ev.parser_id.toLowerCase().includes(searchLower)) ||
-      (ev.status && ev.status.toLowerCase().includes(searchLower))
-    return matchesFilter && matchesSearch
-  })
-
   // Destructure metrics counters
   const committedCount = metrics?.spool_counts?.COMMITTED || metrics?.total_ocsf_committed || 0
   const pendingAiCount = metrics?.spool_counts?.PENDING_AI || 0
   const quarantinedCount = metrics?.spool_counts?.QUARANTINED || 0
   const totalSpooled = metrics?.total_spooled || 0
+  const activeParsersCount = metrics?.active_parsers_count || 0
+
+  // Log Source Distribution Data
+  const rawDistribution = metrics?.source_distribution || {}
+  const sourceData = Object.entries(rawDistribution)
+    .map(([key, count]) => ({
+      name: formatParserName(key),
+      rawId: key,
+      value: Number(count) || 0,
+    }))
+    .filter((item) => item.value > 0)
+    .sort((a, b) => b.value - a.value)
+
+  const totalSourceCount = sourceData.reduce((acc, curr) => acc + curr.value, 0)
 
   return (
     <div className="space-y-6">
@@ -229,14 +263,14 @@ export default function TelemetryDashboard() {
           <div className="flex items-center gap-2">
             <span className="h-2 w-2 rounded-full bg-cyan-600 dark:bg-cyan-400 animate-pulse" />
             <p className="text-xs uppercase tracking-widest text-cyan-700 dark:text-cyan-400 font-mono font-semibold">
-              Live Telemetry & Ingestion Dashboard
+              Live Telemetry & Control Plane
             </p>
           </div>
           <h1 className="text-2xl font-bold text-slate-900 dark:text-gray-100 tracking-tight mt-1">
             ULPF Command Center
           </h1>
           <p className="text-xs text-slate-600 dark:text-gray-400 mt-1">
-            Real-Time Path Log Pumping, WAL Spool Monitoring, and Hybrid Few-Shot RAG AI Parsing Engine.
+            High-Level Pipeline Metrics, Log Source Distribution, WAL Queue Health, Real-Time Throughput, and Autonomous AI Triage.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -251,8 +285,8 @@ export default function TelemetryDashboard() {
         </div>
       </div>
 
-      {/* 1. Real-Time Telemetry Counters */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* 1. Five Real-Time Telemetry Counters */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
         {/* Total Committed Card */}
         <div className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-sm rounded-lg p-4 relative overflow-hidden group hover:border-emerald-500/50 transition-all">
           <div className="flex justify-between items-start">
@@ -265,14 +299,14 @@ export default function TelemetryDashboard() {
           </div>
           <div className="mt-3">
             {initialLoad ? (
-              <div className="h-11 w-32 bg-slate-200 dark:bg-gray-800 animate-pulse rounded" />
+              <div className="h-10 w-28 bg-slate-200 dark:bg-gray-800 animate-pulse rounded" />
             ) : (
-              <span className="text-4xl sm:text-5xl font-bold font-mono text-emerald-600 dark:text-emerald-400 tracking-tight">
+              <span className="text-3xl sm:text-4xl font-bold font-mono text-emerald-600 dark:text-emerald-400 tracking-tight">
                 {committedCount.toLocaleString()}
               </span>
             )}
-            <p className="text-sm text-slate-600 dark:text-slate-300 mt-1.5 font-mono">
-              Deterministic OCSF committed events
+            <p className="text-xs text-slate-600 dark:text-slate-300 mt-1 font-mono">
+              Deterministic OCSF events
             </p>
           </div>
           <div className="absolute top-0 right-0 w-24 h-1 bg-emerald-500" />
@@ -290,14 +324,14 @@ export default function TelemetryDashboard() {
           </div>
           <div className="mt-3">
             {initialLoad ? (
-              <div className="h-11 w-32 bg-slate-200 dark:bg-gray-800 animate-pulse rounded" />
+              <div className="h-10 w-28 bg-slate-200 dark:bg-gray-800 animate-pulse rounded" />
             ) : (
-              <span className="text-4xl sm:text-5xl font-bold font-mono text-amber-600 dark:text-amber-400 tracking-tight">
+              <span className="text-3xl sm:text-4xl font-bold font-mono text-amber-600 dark:text-amber-400 tracking-tight">
                 {pendingAiCount.toLocaleString()}
               </span>
             )}
-            <p className="text-sm text-slate-600 dark:text-slate-300 mt-1.5 font-mono">
-              Queued for RAG agentic synthesis
+            <p className="text-xs text-slate-600 dark:text-slate-300 mt-1 font-mono">
+              Queued for RAG synthesis
             </p>
           </div>
           <div className="absolute top-0 right-0 w-24 h-1 bg-amber-500" />
@@ -315,14 +349,14 @@ export default function TelemetryDashboard() {
           </div>
           <div className="mt-3">
             {initialLoad ? (
-              <div className="h-11 w-32 bg-slate-200 dark:bg-gray-800 animate-pulse rounded" />
+              <div className="h-10 w-28 bg-slate-200 dark:bg-gray-800 animate-pulse rounded" />
             ) : (
-              <span className="text-4xl sm:text-5xl font-bold font-mono text-rose-600 dark:text-rose-400 tracking-tight">
+              <span className="text-3xl sm:text-4xl font-bold font-mono text-rose-600 dark:text-rose-400 tracking-tight">
                 {quarantinedCount.toLocaleString()}
               </span>
             )}
-            <p className="text-sm text-slate-600 dark:text-slate-300 mt-1.5 font-mono">
-              Poison pill / unparseable logs isolated
+            <p className="text-xs text-slate-600 dark:text-slate-300 mt-1 font-mono">
+              Poison pill logs isolated
             </p>
           </div>
           <div className="absolute top-0 right-0 w-24 h-1 bg-rose-500" />
@@ -332,7 +366,7 @@ export default function TelemetryDashboard() {
         <div className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-sm rounded-lg p-4 relative overflow-hidden group hover:border-cyan-500/50 transition-all">
           <div className="flex justify-between items-start">
             <span className="text-xs font-mono font-bold text-slate-500 dark:text-gray-400 uppercase tracking-wider">
-              Total WAL Spooled
+              Total Ingested
             </span>
             <div className="p-2 bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 rounded">
               <Database size={18} />
@@ -340,112 +374,54 @@ export default function TelemetryDashboard() {
           </div>
           <div className="mt-3">
             {initialLoad ? (
-              <div className="h-11 w-32 bg-slate-200 dark:bg-gray-800 animate-pulse rounded" />
+              <div className="h-10 w-28 bg-slate-200 dark:bg-gray-800 animate-pulse rounded" />
             ) : (
-              <span className="text-4xl sm:text-5xl font-bold font-mono text-cyan-600 dark:text-cyan-400 tracking-tight">
+              <span className="text-3xl sm:text-4xl font-bold font-mono text-cyan-600 dark:text-cyan-400 tracking-tight">
                 {totalSpooled.toLocaleString()}
               </span>
             )}
-            <p className="text-sm text-slate-600 dark:text-slate-300 mt-1.5 font-mono">
-              Disk WAL envelope records total
+            <p className="text-xs text-slate-600 dark:text-slate-300 mt-1 font-mono">
+              Durable spool records
             </p>
           </div>
           <div className="absolute top-0 right-0 w-24 h-1 bg-cyan-500 dark:bg-cyan-400" />
         </div>
+
+        {/* Active Parsers Card (Migrated from Overview) */}
+        <div className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-sm rounded-lg p-4 relative overflow-hidden group hover:border-indigo-500/50 transition-all">
+          <div className="flex justify-between items-start">
+            <span className="text-xs font-mono font-bold text-slate-500 dark:text-gray-400 uppercase tracking-wider">
+              Active Parsers
+            </span>
+            <div className="p-2 bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 rounded">
+              <FileCode2 size={18} />
+            </div>
+          </div>
+          <div className="mt-3">
+            {initialLoad ? (
+              <div className="h-10 w-28 bg-slate-200 dark:bg-gray-800 animate-pulse rounded" />
+            ) : (
+              <span className="text-3xl sm:text-4xl font-bold font-mono text-indigo-600 dark:text-indigo-400 tracking-tight">
+                {activeParsersCount.toLocaleString()}
+              </span>
+            )}
+            <p className="text-xs text-slate-600 dark:text-slate-300 mt-1 font-mono">
+              Deterministic registry
+            </p>
+          </div>
+          <div className="absolute top-0 right-0 w-24 h-1 bg-indigo-500 dark:bg-indigo-400" />
+        </div>
       </div>
 
-      {/* Main Grid: Path Input & Load Spikes Chart */}
+      {/* Row 2: Throughput Chart (6 Cols) & Log Source Distribution Donut Chart (6 Cols) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* 2. Path Input Form (5 Cols) */}
-        <div className="lg:col-span-5 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-sm rounded-lg p-5 flex flex-col justify-between">
-          <div>
-            <div className="flex items-center gap-2 mb-3">
-              <FolderInput size={18} className="text-cyan-600 dark:text-cyan-400" />
-              <h2 className="text-sm font-semibold text-slate-800 dark:text-gray-200 uppercase tracking-wider font-mono">
-                Log Path Ingestion Pump
-              </h2>
-            </div>
-            <p className="text-sm text-slate-600 dark:text-slate-300 mb-4 leading-relaxed">
-              Paste an absolute log file path on your local file system to stream lines directly through the high-throughput parser and spool engine.
-            </p>
-
-            <form onSubmit={handleIngestPath} className="space-y-4">
-              <div>
-                <label className="block text-[11px] font-mono text-slate-500 dark:text-gray-400 uppercase mb-1">
-                  Absolute File Path
-                </label>
-                <div className="relative">
-                  <input
-                    type="text"
-                    value={inputPath}
-                    onChange={(e) => setInputPath(e.target.value)}
-                    placeholder="e.g. C:\Users\ombat\ULPF\chaos_stream.log"
-                    className="w-full rounded px-3 py-2.5 text-xs font-mono pr-10 border transition-colors focus:outline-none bg-slate-50 text-slate-900 border-slate-300 placeholder-slate-400 focus:ring-sky-500 focus:border-sky-500 dark:bg-slate-950/80 dark:text-slate-100 dark:border-slate-700 dark:placeholder-slate-500"
-                  />
-                  <FileText size={16} className="absolute right-3 top-3 text-slate-400 dark:text-gray-500 pointer-events-none" />
-                </div>
-              </div>
-
-              {/* Sample Quick Path Chips */}
-              <div className="flex items-center gap-2">
-                <span className="text-[10px] font-mono text-slate-500 dark:text-gray-500 uppercase">Quick Path:</span>
-                <button
-                  type="button"
-                  onClick={() => handleQuickPathSelect('chaos_stream.log')}
-                  className="px-2 py-1 text-[10px] font-mono rounded transition-colors cursor-pointer bg-slate-100 text-slate-700 border border-slate-200 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700 dark:hover:bg-slate-700"
-                >
-                  chaos_stream.log
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleQuickPathSelect('sample_logs.txt')}
-                  className="px-2 py-1 text-[10px] font-mono rounded transition-colors cursor-pointer bg-slate-100 text-slate-700 border border-slate-200 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700 dark:hover:bg-slate-700"
-                >
-                  sample_logs.txt
-                </button>
-              </div>
-
-              <button
-                type="submit"
-                disabled={ingesting || !inputPath.trim()}
-                className="w-full py-2.5 px-4 rounded-md font-medium text-sm bg-slate-900 text-white hover:bg-slate-800 transition-colors shadow-sm dark:bg-sky-500 dark:text-slate-950 dark:hover:bg-sky-400 dark:font-semibold flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {ingesting ? (
-                  <>
-                    <RefreshCw size={15} className="animate-spin" />
-                    <span>Pumping Logs from File...</span>
-                  </>
-                ) : (
-                  <>
-                    <Play size={15} fill="currentColor" />
-                    <span>Stream File Logs via HTTP</span>
-                  </>
-                )}
-              </button>
-            </form>
-          </div>
-
-          {/* Status Message Display */}
-          {ingestStatus && (
-            <div
-              className={`mt-4 p-3 rounded text-xs font-mono border ${
-                ingestStatus.type === 'success'
-                  ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300'
-                  : 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-300'
-              }`}
-            >
-              {ingestStatus.text}
-            </div>
-          )}
-        </div>
-
-        {/* 3. Dynamic Load Spikes Chart (7 Cols) */}
-        <div className="lg:col-span-7 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-sm rounded-lg p-5 flex flex-col justify-between">
+        {/* Dynamic Load Spikes & Ingestion Chart (6 Cols) */}
+        <div className="lg:col-span-6 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-sm rounded-lg p-5 flex flex-col justify-between">
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2">
               <Activity size={18} className="text-cyan-600 dark:text-cyan-400" />
               <h2 className="text-sm font-semibold text-slate-800 dark:text-gray-200 uppercase tracking-wider font-mono">
-                Real-Time Ingestion Throughput & Load Spikes
+                Real-Time Ingestion Throughput
               </h2>
             </div>
             <div className="flex items-center gap-3 text-[10px] font-mono text-slate-600 dark:text-gray-400">
@@ -503,9 +479,173 @@ export default function TelemetryDashboard() {
             )}
           </div>
         </div>
+
+        {/* Log Source & Parser Distribution Donut Chart (6 Cols) */}
+        <div className="lg:col-span-6 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-sm rounded-lg p-5 flex flex-col justify-between">
+          <div className="flex items-center justify-between mb-2 border-b border-slate-100 dark:border-slate-800/80 pb-2.5">
+            <div className="flex items-center gap-2">
+              <PieIcon size={18} className="text-cyan-600 dark:text-cyan-400" />
+              <h2 className="text-sm font-semibold text-slate-800 dark:text-gray-200 uppercase tracking-wider font-mono">
+                Log Source & Parser Distribution
+              </h2>
+            </div>
+            <span className="text-[10px] font-mono text-cyan-700 dark:text-cyan-400 font-semibold bg-cyan-50 dark:bg-cyan-950/60 px-2 py-0.5 rounded border border-cyan-200 dark:border-cyan-800">
+              {sourceData.length} Source{sourceData.length === 1 ? '' : 's'} Active
+            </span>
+          </div>
+
+          <div className="h-64 w-full flex items-center justify-center">
+            {sourceData.length > 0 ? (
+              <div className="w-full h-full flex flex-col sm:flex-row items-center justify-center gap-4">
+                <div className="h-52 w-52 shrink-0">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={sourceData}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={50}
+                        outerRadius={75}
+                        paddingAngle={3}
+                        dataKey="value"
+                      >
+                        {sourceData.map((entry, index) => (
+                          <Cell key={`cell-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                        ))}
+                      </Pie>
+                      <Tooltip content={<CustomPieTooltip />} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="flex-1 w-full max-h-52 overflow-y-auto space-y-1.5 pr-2 font-mono text-xs">
+                  {sourceData.map((item, idx) => {
+                    const color = PIE_COLORS[idx % PIE_COLORS.length]
+                    const pct = totalSourceCount > 0 ? Math.round((item.value / totalSourceCount) * 100) : 0
+                    return (
+                      <div key={item.name} className="flex items-center justify-between p-1.5 rounded hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
+                          <span className="truncate text-slate-700 dark:text-slate-300 font-medium text-[11px]">{item.name}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                          <strong className="text-slate-900 dark:text-slate-100 font-semibold text-[11px]">{item.value.toLocaleString()}</strong>
+                          <span className="text-slate-400 dark:text-slate-500 text-[10px]">({pct}%)</span>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            ) : (
+              <div className="h-full flex flex-col items-center justify-center text-xs text-slate-500 dark:text-gray-500 font-mono text-center px-4">
+                <Database size={24} className="mb-2 text-slate-400 opacity-60" />
+                <span>No parsed log sources committed yet.</span>
+                <span className="text-[10px] mt-1 text-slate-400">Stream logs via Data Ingestion to populate live distribution.</span>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
 
-      {/* 4. Daemon Console Terminal Component */}
+      {/* Row 3: Queue Health (6 Cols) & Autonomous Triage Engine (6 Cols) */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+        {/* Spool Distribution / Queue Health (6 Cols) */}
+        <div className="lg:col-span-6 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-sm rounded-lg p-5 flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between mb-3 border-b border-slate-100 dark:border-slate-800/80 pb-2.5">
+              <div className="flex items-center gap-2">
+                <Database size={16} className="text-cyan-600 dark:text-cyan-400" />
+                <h2 className="text-sm font-semibold text-slate-800 dark:text-gray-200 uppercase tracking-wider font-mono">
+                  Queue Health & Distribution
+                </h2>
+              </div>
+              <span className="flex items-center gap-1.5 text-[10px] font-mono text-emerald-600 dark:text-emerald-400 uppercase font-semibold">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" /> Live
+              </span>
+            </div>
+
+            <div className="space-y-3.5 mt-2">
+              <DistributionRow
+                label="Committed (Deterministic)"
+                value={committedCount}
+                total={totalSpooled}
+                colorClass="text-emerald-600 dark:text-emerald-400"
+                barColorClass="bg-emerald-500"
+              />
+              <DistributionRow
+                label="Pending AI Triage"
+                value={pendingAiCount}
+                total={totalSpooled}
+                colorClass="text-amber-600 dark:text-amber-400"
+                barColorClass="bg-amber-500"
+              />
+              <DistributionRow
+                label="Quarantined (Poison Pills)"
+                value={quarantinedCount}
+                total={totalSpooled}
+                colorClass="text-rose-600 dark:text-rose-400"
+                barColorClass="bg-rose-500"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Autonomous AI Triage Control (6 Cols) */}
+        <div className="lg:col-span-6 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-sm rounded-lg p-5 flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <BrainCircuit size={17} className="text-cyan-600 dark:text-cyan-400" />
+                <h2 className="text-sm font-semibold text-slate-800 dark:text-gray-200 uppercase tracking-wider font-mono">
+                  Autonomous Triage Engine
+                </h2>
+              </div>
+            </div>
+            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed mb-4">
+              Cluster unrecognized formats, synthesize validated regex parsers with few-shot RAG, and promote new parsers to the registry.
+            </p>
+          </div>
+
+          <div>
+            <button
+              onClick={handleTriggerTriage}
+              disabled={triaging}
+              className="w-full py-2.5 px-4 rounded font-medium text-xs bg-slate-900 text-white hover:bg-slate-800 transition-colors shadow-sm dark:bg-cyan-500 dark:text-slate-950 dark:hover:bg-cyan-400 dark:font-semibold flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {triaging ? (
+                <>
+                  <RefreshCw size={14} className="animate-spin" />
+                  <span>Running AI Triage Cycle...</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles size={14} />
+                  <span>Trigger Autonomous AI Triage</span>
+                </>
+              )}
+            </button>
+
+            {triageResult && (
+              <div className="mt-3.5 pt-3 border-t border-slate-100 dark:border-slate-800 grid grid-cols-3 gap-2 text-center font-mono">
+                <div className="p-1.5 bg-slate-50 dark:bg-slate-950/50 rounded border border-slate-200 dark:border-slate-800">
+                  <span className="block text-[10px] text-slate-500 uppercase">Clusters</span>
+                  <strong className="text-xs text-cyan-600 dark:text-cyan-400">{triageResult.clusters_detected}</strong>
+                </div>
+                <div className="p-1.5 bg-slate-50 dark:bg-slate-950/50 rounded border border-slate-200 dark:border-slate-800">
+                  <span className="block text-[10px] text-slate-500 uppercase">Synthesized</span>
+                  <strong className="text-xs text-amber-600 dark:text-amber-400">{triageResult.onboarded_parsers}</strong>
+                </div>
+                <div className="p-1.5 bg-slate-50 dark:bg-slate-950/50 rounded border border-slate-200 dark:border-slate-800">
+                  <span className="block text-[10px] text-slate-500 uppercase">Committed</span>
+                  <strong className="text-xs text-emerald-600 dark:text-emerald-400">{triageResult.committed}</strong>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* 3. Daemon Console Terminal Component */}
       <div
         className={`bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-lg overflow-hidden transition-all shadow-md ${
           isTerminalFullscreen ? 'fixed inset-4 z-50 shadow-2xl flex flex-col' : ''
@@ -578,7 +718,7 @@ export default function TelemetryDashboard() {
               ? 'flex-1'
               : isTerminalExpanded
               ? 'h-96'
-              : 'h-52'
+              : 'h-56'
           }`}
         >
           {showVerboseLogs ? (
@@ -622,132 +762,6 @@ export default function TelemetryDashboard() {
               </div>
             ))
           )}
-        </div>
-      </div>
-
-      {/* 5. Normalized Event Stream Table */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-sm rounded-lg overflow-hidden">
-        {/* Table Toolbar */}
-        <div className="bg-slate-50 dark:bg-slate-900/90 border-b border-slate-200/80 dark:border-slate-800 p-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="flex items-center gap-2">
-            <Database size={18} className="text-cyan-600 dark:text-cyan-400" />
-            <h2 className="text-sm font-semibold text-slate-800 dark:text-gray-200 uppercase tracking-wider font-mono">
-              Normalized Event Stream Table
-            </h2>
-            <span className="text-xs text-slate-500 dark:text-gray-500 font-mono ml-2">
-              ({filteredEvents.length} events loaded)
-            </span>
-          </div>
-
-          <div className="flex items-center gap-3">
-            {/* Search Input */}
-            <div className="relative">
-              <input
-                type="text"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Search raw log / SHA256 / parser..."
-                className="bg-white dark:bg-slate-950/80 border border-slate-300 dark:border-slate-700 rounded px-3 py-1.5 pl-8 text-xs font-mono text-slate-800 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-sky-500 w-64"
-              />
-              <Search size={14} className="absolute left-2.5 top-2 text-slate-400 dark:text-gray-500" />
-            </div>
-
-            {/* Status Filter */}
-            <select
-              value={statusFilter}
-              onChange={(e) => setStatusFilter(e.target.value)}
-              className="bg-white dark:bg-slate-950/80 border border-slate-300 dark:border-slate-700 rounded px-3 py-1.5 text-xs font-mono text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-sky-500 cursor-pointer"
-            >
-              <option value="ALL">All Statuses</option>
-              <option value="COMMITTED">COMMITTED</option>
-              <option value="PENDING_AI">PENDING_AI</option>
-              <option value="QUARANTINED">QUARANTINED</option>
-            </select>
-          </div>
-        </div>
-
-        {/* Table Content */}
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="bg-slate-100 dark:bg-slate-950/60 border-b border-slate-200/80 dark:border-slate-800 text-[10px] font-mono text-slate-600 dark:text-slate-400 uppercase tracking-wider">
-                <th className="py-3 px-4">Event Signature (SHA256)</th>
-                <th className="py-3 px-4">Category / Action</th>
-                <th className="py-3 px-4">Router / Parser ID</th>
-                <th className="py-3 px-4">State Status</th>
-                <th className="py-3 px-4">Raw Log Payload</th>
-                <th className="py-3 px-4 text-right">OCSF JSON</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200/80 dark:divide-slate-800/60 text-xs font-mono">
-              {filteredEvents.length > 0 ? (
-                filteredEvents.map((ev) => {
-                  const isExpanded = expandedEventId === ev.event_id
-                  return (
-                    <tr key={ev.event_id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
-                      <td className="py-3 px-4 text-cyan-600 dark:text-cyan-400 font-mono text-[11px]">
-                        {ev.raw_sha256 ? `${ev.raw_sha256.substring(0, 14)}...` : ev.event_id.substring(0, 8)}
-                      </td>
-                      <td className="py-3 px-4">
-                        {ev.raw_payload.includes('deny') || ev.raw_payload.includes('Failed') ? (
-                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200 dark:bg-rose-950/40 dark:text-rose-400 dark:border-rose-800">
-                            Blocked / Denied
-                          </span>
-                        ) : ev.raw_payload.includes('allow') || ev.raw_payload.includes('Accepted') ? (
-                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-400 dark:border-emerald-800">
-                            Allowed / Pass
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-700 border border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700">
-                            General Telemetry
-                          </span>
-                        )}
-                      </td>
-                      <td className="py-3 px-4 text-slate-700 dark:text-slate-200">
-                        {ev.parser_id ? (
-                          <span className="font-mono text-slate-700 dark:text-slate-200 font-semibold">{ev.parser_id}</span>
-                        ) : (
-                          <span className="text-slate-500 dark:text-slate-400 font-medium italic">Unassigned (Pending AI)</span>
-                        )}
-                      </td>
-                      <td className="py-3 px-4">
-                        {ev.status === 'COMMITTED' ? (
-                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-400 dark:border-emerald-800">
-                            COMMITTED
-                          </span>
-                        ) : ev.status === 'PENDING_AI' ? (
-                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-800">
-                            PENDING_AI
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200 dark:bg-rose-950/40 dark:text-rose-400 dark:border-rose-800">
-                            {ev.status || 'QUARANTINED'}
-                          </span>
-                        )}
-                      </td>
-                      <td className="py-3 px-4 max-w-xs truncate text-slate-600 dark:text-slate-400" title={ev.raw_payload}>
-                        {ev.raw_payload}
-                      </td>
-                      <td className="py-3 px-4 text-right">
-                        <button
-                          onClick={() => setExpandedEventId(isExpanded ? null : ev.event_id)}
-                          className="px-2.5 py-1 text-[10px] font-mono text-cyan-700 dark:text-cyan-400 bg-cyan-50 dark:bg-cyan-950/60 border border-cyan-300 dark:border-cyan-800 rounded hover:bg-cyan-100 dark:hover:bg-cyan-900 transition-colors cursor-pointer"
-                        >
-                          {isExpanded ? 'Hide OCSF' : 'View OCSF'}
-                        </button>
-                      </td>
-                    </tr>
-                  )
-                })
-              ) : (
-                <tr>
-                  <td colSpan={6} className="py-8 text-center text-slate-500 dark:text-gray-500 font-mono text-xs">
-                    No spooled log events found matching the selected filter.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
         </div>
       </div>
     </div>
