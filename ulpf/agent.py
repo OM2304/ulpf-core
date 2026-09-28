@@ -67,7 +67,9 @@ class ParserSynthesisAgent:
     def _default_ollama_caller(self, prompt: str) -> str:
         try:
             import ollama
-            response = ollama.generate(
+            ollama_host = os.getenv("OLLAMA_HOST", None)
+            client = ollama.Client(host=ollama_host) if ollama_host else ollama
+            response = client.generate(
                 model=self.model_name,
                 prompt=prompt,
                 options={"temperature": 0.0}

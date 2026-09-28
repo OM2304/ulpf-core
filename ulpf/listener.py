@@ -108,12 +108,22 @@ async def lifespan(app: FastAPI):
     app.state.engine = engine
     app.state.worker = worker
 
-    # --- NEW: Initialize Kafka Producer ---
-    kafka_producer = AIOKafkaProducer(bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"))
-    await kafka_producer.start()
+    # --- Initialize Kafka Producer with retries ---
+    kafka_bootstrap = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+    kafka_producer = AIOKafkaProducer(bootstrap_servers=kafka_bootstrap)
+    max_kafka_retries = 15
+    for attempt in range(1, max_kafka_retries + 1):
+        try:
+            await kafka_producer.start()
+            logger.info("Kafka Producer initialized successfully (%s).", kafka_bootstrap)
+            break
+        except Exception as e:
+            if attempt == max_kafka_retries:
+                logger.error("Failed to connect Kafka Producer to %s after %d attempts: %s", kafka_bootstrap, max_kafka_retries, e)
+                raise
+            logger.warning("Kafka Producer connection to %s failed (%s). Retrying in 2s (attempt %d/%d)...", kafka_bootstrap, e, attempt, max_kafka_retries)
+            await asyncio.sleep(2)
     app.state.kafka_producer = kafka_producer
-    logger.info("Kafka Producer initialized successfully.")
-    # --------------------------------------
 
     try:
         udp_transport = await start_udp_syslog_server(spool, host="0.0.0.0", port=5140)

@@ -1,9 +1,11 @@
 import asyncio
 import json
+import os
 from aiokafka import AIOKafkaProducer
 
 async def simulate_tampering():
-    producer = AIOKafkaProducer(bootstrap_servers='localhost:9092')
+    bootstrap_servers = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+    producer = AIOKafkaProducer(bootstrap_servers=bootstrap_servers)
     await producer.start()
     
     # The attacker alters the payload, but doesn't know how to perfectly spoof the ULPF hash

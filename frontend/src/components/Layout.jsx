@@ -85,8 +85,8 @@ function Sidebar({ onNavigate }) {
         ))}
       </nav>
       <div className="sidebar-footer">
-        <div className="daemon-status"><Server size={15} /><span><strong>Daemon</strong><small>FastAPI / localhost:8000</small></span><span className="status-led" /></div>
-        <p className="api-endpoint">{API_BASE}</p>
+        <div className="daemon-status"><Server size={15} /><span><strong>Daemon</strong><small>FastAPI / {API_BASE ? API_BASE.replace(/^https?:\/\//, '') : 'relative proxy'}</small></span><span className="status-led" /></div>
+        <p className="api-endpoint">{API_BASE || '/api/v1'}</p>
       </div>
     </aside>
   )

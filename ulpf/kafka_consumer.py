@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 
 from aiokafka import AIOKafkaConsumer
 
@@ -15,9 +16,10 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("KafkaWorker")
 
 async def consume_and_verify():
+    kafka_bootstrap = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
     consumer = AIOKafkaConsumer(
         "raw-logs",
-        bootstrap_servers="localhost:9092",
+        bootstrap_servers=kafka_bootstrap,
         group_id="ulpf-core-router",
         auto_offset_reset="earliest",
     )
@@ -26,13 +28,24 @@ async def consume_and_verify():
     engine = DeterministicEngine(registry=registry)
     spool = DurableSpool("ulpf_spool.db")
     
-    # --- NEW: Connect the Consumer to PostgreSQL ---
+    # Connect the Consumer to PostgreSQL (reads DATABASE_URL from env)
     storage = NormalizedStorage() 
 
     logger.info("🚀 Booting up ULPF Kafka Consumer Worker...")
-    await consumer.start()
+    max_retries = 15
+    for attempt in range(1, max_retries + 1):
+        try:
+            await consumer.start()
+            break
+        except Exception as e:
+            if attempt == max_retries:
+                logger.error(f"Failed to connect to Kafka at {kafka_bootstrap} after {max_retries} attempts: {e}")
+                raise
+            logger.warning(f"Kafka broker at {kafka_bootstrap} not ready yet ({e}). Retrying in 2s (attempt {attempt}/{max_retries})...")
+            await asyncio.sleep(2)
+
     logger.info(
-        "✅ Connected to KRaft Broker. Listening for events on 'raw-logs'...\n"
+        f"✅ Connected to KRaft Broker ({kafka_bootstrap}). Listening for events on 'raw-logs'...\n"
     )
     logger.info("-" * 60)
 

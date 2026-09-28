@@ -3,7 +3,7 @@ import time
 import requests
 from rich import print
 
-INGEST_URL = "http://localhost:8000/api/v1/ingest"
+INGEST_URL = os.getenv("INGEST_URL", "http://localhost:8000/api/v1/ingest")
 
 def process_file(file_path, batch_size, delay_seconds, total_sent):
     batch = []

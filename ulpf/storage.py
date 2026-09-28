@@ -1,7 +1,9 @@
+import hashlib
 import json
 import logging
+import os
 import sqlite3
-import hashlib
+import time
 from typing import Any, Dict, List, Optional
 from ulpf.models import EventEnvelope, EventStatus
 
@@ -17,18 +19,13 @@ except ImportError:
 
 
 class NormalizedStorage:
-    def __init__(self, db_path: Optional[str] = None, **kwargs):
+    def __init__(self, db_path: Optional[str] = None, database_url: Optional[str] = None, **kwargs):
         self.db_path = db_path
         self.use_sqlite = bool(db_path)
-        self.db_password = "root"
-
-        self.conn_params = {
-            "dbname": "postgres",
-            "user": "postgres",
-            "password": self.db_password,
-            "host": "localhost",
-            "port": "5432"
-        }
+        self.database_url = database_url or os.getenv(
+            "DATABASE_URL",
+            "postgresql://postgres:postgrespassword@localhost:5432/ulpf_db"
+        )
 
         if not self.use_sqlite and not POSTGRES_AVAILABLE:
             self.use_sqlite = True
@@ -41,7 +38,7 @@ class NormalizedStorage:
             conn = sqlite3.connect(self.db_path or "ulpf_storage.db")
             conn.row_factory = sqlite3.Row
             return conn
-        return psycopg2.connect(**self.conn_params)
+        return psycopg2.connect(self.database_url)
 
     def _initialize_db(self) -> None:
         if self.use_sqlite:
@@ -71,31 +68,40 @@ class NormalizedStorage:
                 logger.error(f"SQLite NormalizedStorage init failed: {e}")
             return
 
-        try:
-            with self._get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        CREATE TABLE IF NOT EXISTS ocsf_ledger (
-                            id SERIAL PRIMARY KEY,
-                            event_id VARCHAR(255) UNIQUE NOT NULL,
-                            class_uid VARCHAR(50) NOT NULL,
-                            parser_id VARCHAR(100),
-                            raw_payload TEXT,
-                            raw_sha256 VARCHAR(64),
-                            normalized_data JSONB,
-                            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                        );
-                    """)
-                    cur.execute("""
-                        ALTER TABLE ocsf_ledger ADD COLUMN IF NOT EXISTS raw_sha256 VARCHAR(64);
-                    """)
-                conn.commit()
-            logger.info("🐘 PostgreSQL Immutable Ledger connected and verified.")
-        except Exception as e:
-            logger.warning(f"⚠️ PostgreSQL Connection Failed ({e}). Falling back to SQLite.")
-            self.use_sqlite = True
-            self.db_path = "ulpf_storage.db"
-            self._initialize_db()
+        max_retries = 5
+        for attempt in range(1, max_retries + 1):
+            try:
+                with self._get_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            CREATE TABLE IF NOT EXISTS ocsf_ledger (
+                                id SERIAL PRIMARY KEY,
+                                event_id VARCHAR(255) UNIQUE NOT NULL,
+                                class_uid VARCHAR(50) NOT NULL,
+                                parser_id VARCHAR(100),
+                                raw_payload TEXT,
+                                raw_sha256 VARCHAR(64),
+                                normalized_data JSONB,
+                                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                            );
+                        """)
+                        cur.execute("""
+                            ALTER TABLE ocsf_ledger ADD COLUMN IF NOT EXISTS raw_sha256 VARCHAR(64);
+                        """)
+                    conn.commit()
+                logger.info("🐘 PostgreSQL Immutable Ledger connected and verified.")
+                return
+            except Exception as e:
+                err_str = str(e).lower()
+                if attempt < max_retries and ("connection" in err_str or "could not connect" in err_str or "refused" in err_str):
+                    logger.warning(f"PostgreSQL connection attempt {attempt}/{max_retries} failed ({e}). Retrying in 2s...")
+                    time.sleep(2)
+                else:
+                    logger.warning(f"⚠️ PostgreSQL Connection Failed ({e}). Falling back to SQLite.")
+                    self.use_sqlite = True
+                    self.db_path = "ulpf_storage.db"
+                    self._initialize_db()
+                    return
 
     def commit_event(self, envelope: EventEnvelope) -> bool:
         if envelope.status != EventStatus.COMMITTED or not getattr(envelope, "ocsf_event", None):
