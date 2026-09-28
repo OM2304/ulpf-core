@@ -39,6 +39,7 @@ class IngestResponse(BaseModel):
     fast_path_committed: int
     queued_for_ai: int
     event_ids: List[str]
+    events: Optional[List[Dict[str, Any]]] = []  # <-- NEW: Allows UI to render the preview
 
 
 class MetricsResponse(BaseModel):
@@ -164,16 +165,16 @@ def _components(request_app: FastAPI) -> Tuple[DurableSpool, NormalizedStorage, 
 @app.post("/api/v1/ingest", response_model=IngestResponse, status_code=status.HTTP_201_CREATED)
 async def ingest_logs(payload: IngestRequest) -> IngestResponse:
     """
-    HIGH-THROUGHPUT KAFKA INGESTION:
-    This endpoint ONLY hashes the payload and drops it into the Kafka broker.
-    All parsing, DB writes, and AI triage are deferred to the Consumer Worker.
+    HIGH-THROUGHPUT KAFKA INGESTION with Synchronous UI Preview
     """
     kafka_producer: AIOKafkaProducer = app.state.kafka_producer
+    _, _, _, engine, _ = _components(app)
 
     if any(not line.strip() for line in payload.payloads):
         raise HTTPException(status_code=400, detail="payloads must contain non-empty log lines")
     
     event_ids: List[str] = []
+    ui_preview_events: List[Dict[str, Any]] = []
     kafka_tasks = []
 
     try:
@@ -186,6 +187,18 @@ async def ingest_logs(payload: IngestRequest) -> IngestResponse:
                 source_transport=payload.transport or "http_api"
             )
             
+            # --- FIXED: Generate UI preview without assuming attribute names ---
+            success, parsed_event = engine.parse_and_normalize(envelope)
+            
+            # Convert the entire Pydantic object to a dict so we catch all custom fields safely
+            event_dict = parsed_event.model_dump() if hasattr(parsed_event, "model_dump") else parsed_event.dict()
+            
+            # Ensure the Status Enum is correctly converted to a string for the React UI
+            event_dict["status"] = parsed_event.status.value if hasattr(parsed_event.status, "value") else str(parsed_event.status)
+            
+            ui_preview_events.append(event_dict)
+            # -----------------------------------------------------------------
+
             raw_sha256 = hashlib.sha256(raw_payload.encode('utf-8')).hexdigest()
 
             kafka_msg = {
@@ -195,13 +208,11 @@ async def ingest_logs(payload: IngestRequest) -> IngestResponse:
                 "original_hash": raw_sha256
             }
 
-            # Queue the Kafka dispatch concurrently
             kafka_tasks.append(
                 kafka_producer.send("raw-logs", json.dumps(kafka_msg).encode('utf-8'))
             )
             event_ids.append(envelope.event_id)
 
-        # Fire all messages to Kafka simultaneously
         if kafka_tasks:
             await asyncio.gather(*kafka_tasks)
 
@@ -209,14 +220,13 @@ async def ingest_logs(payload: IngestRequest) -> IngestResponse:
         logger.exception("Ingestion failed while processing %d payload(s)", len(payload.payloads))
         raise HTTPException(status_code=500, detail=f"ingestion failed: {exc}") from exc
 
-    # Return immediately! 
     return IngestResponse(
         ingested=len(event_ids),
-        fast_path_committed=0,
-        queued_for_ai=0,
+        fast_path_committed=len([e for e in ui_preview_events if e.get("status") == "COMMITTED"]),
+        queued_for_ai=len([e for e in ui_preview_events if e.get("status") != "COMMITTED"]),
         event_ids=event_ids,
+        events=ui_preview_events, 
     )
-
 
 @app.post("/api/v1/ingest/path", status_code=201)
 async def ingest_file_path(req: PathIngestRequest):

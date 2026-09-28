@@ -1,0 +1,11 @@
+{
+  "parser_id": "dynamic_ai_da608ee4_v1",
+  "parser_version": "1.0.0",
+  "description": "AI-synthesized dynamic parser for AUTHENTICATION (validated via RAG reflexion)",
+  "regex_pattern": "(?i).*?(?P<action>[\\w\\.\\-]+).*?(?P<target>[\\w\\.\\-]+).*?(?P<user>[\\w\\.\\-]+)",
+  "field_mappings": {
+    "action": "action",
+    "target": "target",
+    "user": "user"
+  }
+}
